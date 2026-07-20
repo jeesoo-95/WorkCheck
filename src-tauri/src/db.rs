@@ -99,6 +99,7 @@ fn seed(conn: &Connection) -> Result<(), String> {
         ("notify_time", "09:00"),
         ("notify_on_overdue", "1"),
         ("close_to_tray", "1"),
+        ("theme", "system"), // system(시스템 따름)|light|dark
     ];
     for (k, v) in defaults {
         conn.execute(

@@ -37,7 +37,17 @@ fn register_notification_identity(icon_dir: &std::path::Path) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // 중복 실행 방지: 두 번째 인스턴스 실행 시 기존 창을 표시·복원·포커스.
+        // (Builder 최상단에 등록해야 다른 플러그인 초기화 전에 단일화가 적용됨)
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+        }))
         // 플러그인은 JS 직접 호출 대신 Rust 커맨드로 래핑해 사용 (ACL 이슈 회피)
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .setup(|app| {
@@ -94,6 +104,8 @@ pub fn run() {
             commands::update_task,
             commands::delete_task,
             commands::get_stats,
+            commands::set_sort_order,
+            commands::open_link,
             commands::get_settings,
             commands::set_setting,
             commands::list_holidays,

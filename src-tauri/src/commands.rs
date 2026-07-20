@@ -671,6 +671,25 @@ pub fn delete_task(app: tauri::AppHandle, state: State<AppState>, id: i64) -> Re
     Ok(())
 }
 
+/// 드래그 정렬 — 전달받은 id 순서대로 sort_order=0,1,2… 를 일괄 부여(트랜잭션).
+/// 프론트에서 같은 주기 그룹의 표시 순서를 그대로 넘긴다(그룹 간 이동 없음).
+/// load_tasks 는 ORDER BY sort_order,id 이고 프론트가 recur_type 로 재그룹핑하므로
+/// 그룹별로 0..N 이 겹쳐도 그룹 내 상대 순서는 안정적으로 유지된다.
+#[tauri::command]
+pub fn set_sort_order(state: State<AppState>, ids: Vec<i64>) -> Result<(), String> {
+    let mut conn = state.db.lock().map_err(e2s)?;
+    let tx = conn.transaction().map_err(e2s)?;
+    for (i, id) in ids.iter().enumerate() {
+        tx.execute(
+            "UPDATE Task SET sort_order=?1 WHERE id=?2",
+            params![i as i64, id],
+        )
+        .map_err(e2s)?;
+    }
+    tx.commit().map_err(e2s)?;
+    Ok(())
+}
+
 // ── 통계 탭 ──────────────────────────────────────────────
 
 #[tauri::command]
@@ -815,6 +834,18 @@ pub fn delete_holiday(state: State<AppState>, date: String) -> Result<(), String
 }
 
 // ── M2: 알림 · 자동 시작 (플러그인은 JS 직접 호출 대신 커맨드로 래핑) ──
+
+/// 링크를 기본 브라우저로 연다. http/https 스킴만 허용하고 그 외는 Err.
+/// (opener 플러그인을 JS 직접 호출 대신 이 커맨드로 래핑 — 스킴 화이트리스트 강제)
+#[tauri::command]
+pub fn open_link(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let u = url.trim();
+    if !(u.starts_with("http://") || u.starts_with("https://")) {
+        return Err("http/https 링크만 열 수 있습니다".to_string());
+    }
+    app.opener().open_url(u, None::<&str>).map_err(e2s)
+}
 
 /// 즉시 샘플 토스트 발송 (설정 화면의 알림 테스트용)
 #[tauri::command]

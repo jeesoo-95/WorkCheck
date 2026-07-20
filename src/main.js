@@ -20,6 +20,31 @@ function showError(msg, retryFn) {
 }
 function clearError() { document.getElementById('err-banner').classList.remove('show'); }
 
+// ── 테마(다크 모드) ──────────────────────────────────────
+// pref: 'system'|'light'|'dark'. system 은 prefers-color-scheme 로 해석.
+// <html data-theme> 를 항상 light/dark 로 확정해 style.css 오버라이드가 적용된다.
+let themeMedia = null;
+function resolveTheme(pref) {
+  if (pref === 'light' || pref === 'dark') return pref;
+  return (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+}
+function applyTheme(pref) {
+  document.documentElement.dataset.theme = resolveTheme(pref);
+  // 시스템 따름일 때만 OS 테마 변경 리스너 유지, 그 외엔 해제
+  if (themeMedia) { themeMedia.onchange = null; themeMedia = null; }
+  if (pref === 'system' && window.matchMedia) {
+    themeMedia = window.matchMedia('(prefers-color-scheme: dark)');
+    themeMedia.onchange = () => { document.documentElement.dataset.theme = resolveTheme('system'); };
+  }
+}
+async function loadTheme() {
+  try {
+    const settings = await invoke('get_settings');
+    const t = (settings.find(s => s.key === 'theme') || {}).value || 'system';
+    applyTheme(t);
+  } catch { applyTheme('system'); }
+}
+
 // ── 유틸 ──────────────────────────────────────────────
 function esc(s) {
   return String(s == null ? '' : s)
@@ -103,7 +128,7 @@ function detailHtml(occ, links, opts) {
     h = occ.memo ? '📝 ' + esc(occ.memo) : '';
     if (links.length) {
       h += '<div class="links">' + links.map((l) =>
-        `<a data-url="${esc(l.url || '')}" title="클릭하면 링크 복사">🔗 ${esc(l.title || l.url || '링크')}</a>`
+        `<a data-url="${esc(l.url || '')}" title="클릭=열기 · Shift+클릭=복사">🔗 ${esc(l.title || l.url || '링크')}</a>`
       ).join('') + '</div>';
     }
   }
@@ -158,16 +183,20 @@ function wireTaskEvents(container) {
       memoInput.addEventListener('blur', () => saveCheckMemo(task, memoInput));
     }
   });
-  // 링크 클릭 → 클립보드 복사
+  // 링크 클릭 → 브라우저로 열기. Shift+클릭 → 클립보드 복사(기존 동작 유지)
   container.querySelectorAll('.task-detail a').forEach(a => {
     a.addEventListener('click', async e => {
       e.stopPropagation();
       const url = a.dataset.url;
-      if (url) {
+      if (!url) return;
+      if (e.shiftKey) {
         const ok = await copyToClipboard(url);
         const orig = a.textContent;
         a.textContent = ok ? '✓ 복사됨' : '복사 실패';
         setTimeout(() => { a.textContent = orig; }, 1200);
+      } else {
+        try { await invoke('open_link', { url }); clearError(); }
+        catch (err) { showError(err.message || err, null); }
       }
     });
   });
@@ -322,11 +351,53 @@ async function loadManage() {
     });
   });
   wrap.querySelectorAll('.add-here').forEach(a => a.addEventListener('click', () => openModal(null)));
+
+  // 드래그 순서 정렬 바인딩 (같은 주기 그룹 안에서만)
+  wireDrag(wrap);
+}
+
+// ── 드래그 순서 정렬 (전체 업무 탭) ──────────────────────────
+// 같은 주기 그룹의 행끼리만 재정렬. 드롭 시 그룹의 표시 순서를 set_sort_order 로 저장.
+let dragEl = null;
+function wireDrag(wrap) {
+  wrap.querySelectorAll('.m-task[draggable="true"]').forEach(row => {
+    row.addEventListener('dragstart', e => {
+      dragEl = row;
+      row.classList.add('dragging');
+      if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', row.dataset.id); }
+    });
+    row.addEventListener('dragend', () => {
+      row.classList.remove('dragging');
+      dragEl = null;
+    });
+    row.addEventListener('dragover', e => {
+      // 같은 그룹의 다른 행 위에서만 삽입 위치 미리보기(실제 DOM 이동)
+      if (!dragEl || dragEl === row || dragEl.dataset.group !== row.dataset.group) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      const rect = row.getBoundingClientRect();
+      const before = (e.clientY - rect.top) < rect.height / 2;
+      row.parentNode.insertBefore(dragEl, before ? row : row.nextSibling);
+    });
+    row.addEventListener('drop', async e => {
+      if (!dragEl || dragEl.dataset.group !== row.dataset.group) return;
+      e.preventDefault();
+      await persistOrder(wrap, row.dataset.group);
+    });
+  });
+}
+// 해당 그룹의 현재 DOM 순서를 읽어 sort_order 로 저장. 실패 시 재로딩으로 원복.
+async function persistOrder(wrap, group) {
+  const ids = [...wrap.querySelectorAll(`.m-task[data-group="${group}"]`)].map(el => Number(el.dataset.id));
+  try { await invoke('set_sort_order', { ids }); clearError(); }
+  catch (e) { showError(e.message || e, null); loadManage(); }
 }
 
 // 전체 업무 탭의 업무 행 (done=true 는 완료된 1회성: 흐리게 + 완료 배지 + 수정 숨김)
+// 완료 1회성(done)은 드래그 대상 제외 — draggable·data-group 미부여.
 function mTaskRow(t, done) {
-  return `<div class="m-task${done ? ' done' : ''}" data-id="${t.id}">
+  const drag = done ? '' : ` draggable="true" data-group="${esc(t.recurType)}"`;
+  return `<div class="m-task${done ? ' done' : ''}" data-id="${t.id}"${drag}>
            <div class="task-name">${esc(t.name)}</div>
            <span class="rule">${esc(ruleLabelJs(t))}</span>
            ${t.notifyTime ? `<span class="notify-note">🔔 ${esc(t.notifyTime)}</span>` : ''}
@@ -573,6 +644,7 @@ async function loadSettings() {
 
   const map = {};
   settings.forEach(s => map[s.key] = s.value);
+  document.getElementById('set-theme').value = map.theme || 'system';
   document.getElementById('set-notify-enabled').checked = map.notify_enabled === '1';
   document.getElementById('set-notify-time').value = map.notify_time || '09:00';
   document.getElementById('set-notify-overdue').checked = map.notify_on_overdue === '1';
@@ -603,6 +675,11 @@ async function saveSetting(key, value) {
   try { await invoke('set_setting', { key, value }); clearError(); }
   catch (e) { showError(e.message || e, null); }
 }
+// 테마 변경: 저장 + 즉시 적용
+document.getElementById('set-theme').addEventListener('change', e => {
+  saveSetting('theme', e.target.value);
+  applyTheme(e.target.value);
+});
 document.getElementById('set-notify-enabled').addEventListener('change', e => saveSetting('notify_enabled', e.target.checked ? '1' : '0'));
 document.getElementById('set-notify-overdue').addEventListener('change', e => saveSetting('notify_on_overdue', e.target.checked ? '1' : '0'));
 document.getElementById('set-notify-time').addEventListener('change', e => saveSetting('notify_time', e.target.value));
@@ -647,5 +724,6 @@ window.addEventListener('DOMContentLoaded', () => {
   if (!hasTauri()) {
     showError('Tauri 런타임을 찾을 수 없습니다. `npm run dev` 로 앱에서 실행하세요.', null);
   }
+  loadTheme(); // 저장된 테마 로드→적용 (실패 시 시스템 따름)
   loadToday();
 });

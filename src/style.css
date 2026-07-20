@@ -1,11 +1,42 @@
 /* 업무 체크 — 스타일 (UI목업_v1 팔레트/컴포넌트 그대로 포팅, 네이티브 창용으로 조정) */
 :root{
-  --bg:#F7F8FA; --card:#FFFFFF; --line:#E5E7EB;
+  --bg:#F7F8FA; --card:#FFFFFF; --line:#E5E7EB; --line-strong:#C7CDD6;
   --txt:#1F2937; --txt-sub:#6B7280; --txt-faint:#9CA3AF;
-  --blue:#2563EB; --blue-soft:#EFF4FF;
-  --red:#DC2626; --red-soft:#FEF2F2;
+  --blue:#2563EB; --blue-hover:#1D4ED8; --blue-soft:#EFF4FF;
+  --red:#DC2626; --red-soft:#FEF2F2; --red-border:#F5C2C2;
   --green:#059669;
+  --chip:#F3F4F6;        /* 일반 배지 배경 */
+  --skip-bg:#E5E7EB;     /* 건너뜀 배지 배경 */
+  --track:#EDF0F4;       /* 진행바 · 히트맵 빈 칸 트랙 */
+  --detail-bg:#FBFCFD;   /* 업무 상세 펼침 배경 */
+  --subtle-bg:#FAFBFC;   /* 빈 상태 카드 배경 */
+  --switch-off:#CBD5E1;  /* 토글 OFF 배경 */
+  --overlay:rgba(17,24,39,.45); /* 모달 딤 */
+  /* 히트맵 단계별 색 (c1<c2<c3) */
+  --heat-c1-bg:#BFDBFE; --heat-c1-fg:#1E40AF;
+  --heat-c2-bg:#60A5FA; --heat-c2-fg:#FFFFFF;
+  --heat-c3-bg:#2563EB; --heat-c3-fg:#FFFFFF;
 }
+/* 다크 팔레트 — main.js 가 <html data-theme> 를 light/dark 로 확정해 적용
+   (시스템 따름은 JS 가 prefers-color-scheme 로 해석해 dark/light 로 설정) */
+:root[data-theme="dark"]{
+  --bg:#16181D; --card:#1F2229; --line:#2A2E37; --line-strong:#3A4150;
+  --txt:#E5E7EB; --txt-sub:#9CA3AF; --txt-faint:#6B7280;
+  --blue:#60A5FA; --blue-hover:#3B82F6; --blue-soft:#1E293B;
+  --red:#F87171; --red-soft:#3A2222; --red-border:#5A2A2A;
+  --green:#34D399;
+  --chip:#2A2E37;
+  --skip-bg:#2A2E37;
+  --track:#2A2E37;
+  --detail-bg:#1A1D23;
+  --subtle-bg:#1A1D23;
+  --switch-off:#3A4150;
+  --overlay:rgba(0,0,0,.6);
+  --heat-c1-bg:#1E3A5F; --heat-c1-fg:#BFDBFE;
+  --heat-c2-bg:#2563EB; --heat-c2-fg:#FFFFFF;
+  --heat-c3-bg:#3B82F6; --heat-c3-fg:#FFFFFF;
+}
+html{color-scheme:light dark;}
 *{margin:0;padding:0;box-sizing:border-box;}
 html,body{height:100%;}
 body{
@@ -16,7 +47,7 @@ body{
 /* ── 에러 배너 ─────────────────────────── */
 .err-banner{
   display:none; background:var(--red-soft); color:var(--red);
-  border-bottom:1px solid #F5C2C2; padding:8px 16px; font-size:12.5px;
+  border-bottom:1px solid var(--red-border); padding:8px 16px; font-size:12.5px;
   align-items:center; gap:10px;
 }
 .err-banner.show{display:flex;}
@@ -61,13 +92,13 @@ body{
   background:var(--card);border:1px solid var(--line);border-radius:8px;
   margin-bottom:6px;overflow:hidden;transition:border-color .12s;
 }
-.task:hover{border-color:#C7CDD6;}
+.task:hover{border-color:var(--line-strong);}
 .task.overdue{border-left:3px solid var(--red);}
 .task.upcoming{opacity:.55;}
 .task-row{display:flex;align-items:center;gap:10px;padding:10px 12px;cursor:pointer;}
 .task-row:focus-visible{outline:2px solid var(--blue);outline-offset:-2px;border-radius:8px;}
 .chk{
-  width:18px;height:18px;border:2px solid #C7CDD6;border-radius:5px;flex-shrink:0;
+  width:18px;height:18px;border:2px solid var(--line-strong);border-radius:5px;flex-shrink:0;
   display:flex;align-items:center;justify-content:center;background:var(--card);
   transition:all .12s;font-size:12px;color:transparent;
 }
@@ -77,11 +108,11 @@ body{
 .task-name{flex:1;font-size:14px;font-weight:500;}
 .task.done .task-name{color:var(--txt-faint);text-decoration:line-through;}
 .badge{
-  font-size:11px;padding:2px 7px;border-radius:20px;background:#F3F4F6;
+  font-size:11px;padding:2px 7px;border-radius:20px;background:var(--chip);
   color:var(--txt-sub);flex-shrink:0;font-weight:500;
 }
 .badge.late{background:var(--red-soft);color:var(--red);font-weight:700;}
-.badge.skip{background:#E5E7EB;color:var(--txt-sub);font-weight:600;}
+.badge.skip{background:var(--skip-bg);color:var(--txt-sub);font-weight:600;}
 .badge.done{background:var(--blue-soft);color:var(--blue);font-weight:600;}
 .clip{color:var(--txt-faint);font-size:12px;flex-shrink:0;}
 /* 건너뜀 회차: 체크박스는 점선·흐리게(비활성 느낌) — 클릭하면 완료 전환은 허용 */
@@ -91,7 +122,7 @@ body{
 /* ── 상세(메모·링크) 펼침 ─────────────────────────── */
 .task-detail{
   display:none;border-top:1px dashed var(--line);padding:10px 12px 12px 40px;
-  background:#FBFCFD;font-size:12.5px;color:var(--txt-sub);line-height:1.6;
+  background:var(--detail-bg);font-size:12.5px;color:var(--txt-sub);line-height:1.6;
 }
 .task.open .task-detail{display:block;}
 .task-detail .links{margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;}
@@ -106,7 +137,7 @@ body{
   border:1px solid var(--line);background:var(--card);color:var(--txt-sub);
   border-radius:6px;padding:4px 10px;font-size:11.5px;cursor:pointer;font-family:inherit;
 }
-.btn-mini:hover{border-color:#C7CDD6;color:var(--txt);}
+.btn-mini:hover{border-color:var(--line-strong);color:var(--txt);}
 .memo-line{display:flex;align-items:center;gap:6px;flex:1;min-width:160px;}
 .check-memo{
   flex:1;border:1px solid var(--line);border-radius:6px;padding:5px 8px;
@@ -124,7 +155,7 @@ body{
 .wp-head{display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:8px;}
 .wp-head b{font-size:13px;}
 .wp-pct{font-weight:800;color:var(--blue);}
-.bar{height:8px;background:#EDF0F4;border-radius:4px;overflow:hidden;}
+.bar{height:8px;background:var(--track);border-radius:4px;overflow:hidden;}
 .bar > div{height:100%;background:var(--blue);border-radius:4px;transition:width .3s;}
 
 /* ── 전체 업무 탭 ─────────────────────────── */
@@ -134,7 +165,7 @@ body{
   background:var(--blue);color:#fff;border:none;border-radius:7px;
   padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;
 }
-.btn-add:hover{background:#1D4ED8;}
+.btn-add:hover{background:var(--blue-hover);}
 .btn-add:focus-visible{outline:2px solid var(--blue);outline-offset:2px;}
 .group-label{font-size:11px;font-weight:700;color:var(--txt-faint);letter-spacing:.06em;margin:14px 0 6px;}
 .m-task{
@@ -152,14 +183,17 @@ body{
 .m-task .actions button:hover{color:var(--blue);}
 .m-task .actions button.del:hover{color:var(--red);}
 .m-task.done{opacity:.5;}
+/* 드래그 정렬 (같은 주기 그룹 내) — 드래그 대상은 grab 커서, 드래그 중 반투명 */
+.m-task[draggable="true"]{cursor:grab;}
+.m-task.dragging{opacity:.4;cursor:grabbing;border-style:dashed;border-color:var(--blue);}
 .show-done{
   display:inline-block;margin:2px 0 6px;font-size:12px;color:var(--txt-sub);
   cursor:pointer;text-decoration:underline;
 }
 .show-done:hover{color:var(--blue);}
 .empty{
-  border:1px dashed #D1D5DB;border-radius:8px;padding:18px;text-align:center;
-  color:var(--txt-faint);font-size:12.5px;background:#FAFBFC;
+  border:1px dashed var(--line-strong);border-radius:8px;padding:18px;text-align:center;
+  color:var(--txt-faint);font-size:12.5px;background:var(--subtle-bg);
 }
 .empty a{color:var(--blue);cursor:pointer;text-decoration:underline;}
 
@@ -180,12 +214,12 @@ body{
 .heat-title{font-size:12px;font-weight:700;color:var(--txt-sub);margin:18px 0 8px;}
 .heat{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;}
 .heat .cell{
-  aspect-ratio:1;border-radius:4px;background:#EDF0F4;font-size:9.5px;
+  aspect-ratio:1;border-radius:4px;background:var(--track);font-size:9.5px;
   display:flex;align-items:center;justify-content:center;color:var(--txt-faint);
 }
-.heat .c1{background:#BFDBFE;color:#1E40AF;}
-.heat .c2{background:#60A5FA;color:#fff;}
-.heat .c3{background:var(--blue);color:#fff;}
+.heat .c1{background:var(--heat-c1-bg);color:var(--heat-c1-fg);}
+.heat .c2{background:var(--heat-c2-bg);color:var(--heat-c2-fg);}
+.heat .c3{background:var(--heat-c3-bg);color:var(--heat-c3-fg);}
 .heat .miss{background:var(--red-soft);color:var(--red);}
 .heat .future{opacity:.4;}
 .heat .dow{background:none;font-size:10px;font-weight:700;}
@@ -202,7 +236,7 @@ body{
   border:1px solid var(--line);background:var(--card);color:var(--txt-sub);
   border-radius:6px;padding:5px 12px;font-size:12px;cursor:pointer;font-family:inherit;
 }
-.dob:hover{border-color:#C7CDD6;color:var(--txt);}
+.dob:hover{border-color:var(--line-strong);color:var(--txt);}
 .dob[data-active]{background:var(--blue);color:#fff;border-color:var(--blue);font-weight:600;}
 
 /* ── 설정 탭 (신규, 동일 스타일) ─────────────────────────── */
@@ -220,14 +254,15 @@ body{
 .set-row + .set-row{border-top:1px solid var(--line);}
 .set-row .set-label{font-size:13px;}
 .set-row .set-sub{font-size:11px;color:var(--txt-faint);margin-top:2px;}
-.set-row input[type=time]{
+.set-row input[type=time],.set-row select{
   border:1px solid var(--line);border-radius:6px;padding:5px 8px;font-family:inherit;font-size:13px;
+  background:var(--card);color:var(--txt);
 }
 /* 토글 스위치 */
 .switch{position:relative;width:40px;height:22px;flex-shrink:0;}
 .switch input{opacity:0;width:0;height:0;}
 .slider{
-  position:absolute;inset:0;background:#CBD5E1;border-radius:22px;cursor:pointer;transition:.2s;
+  position:absolute;inset:0;background:var(--switch-off);border-radius:22px;cursor:pointer;transition:.2s;
 }
 .slider::before{
   content:"";position:absolute;width:16px;height:16px;left:3px;top:3px;
@@ -257,7 +292,7 @@ body{
 
 /* ── 모달 (업무 추가/수정) ─────────────────────────── */
 .modal-back{
-  display:none;position:fixed;inset:0;background:rgba(17,24,39,.45);
+  display:none;position:fixed;inset:0;background:var(--overlay);
   align-items:center;justify-content:center;z-index:50;padding:16px;
 }
 .modal-back.show{display:flex;}
@@ -283,9 +318,9 @@ body{
   background:none;border:1px solid var(--line);border-radius:7px;padding:8px 14px;
   font-size:13px;cursor:pointer;font-family:inherit;color:var(--txt-sub);
 }
-.btn-ghost:hover{border-color:#C7CDD6;color:var(--txt);}
+.btn-ghost:hover{border-color:var(--line-strong);color:var(--txt);}
 .btn-primary{
   background:var(--blue);color:#fff;border:none;border-radius:7px;padding:8px 16px;
   font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;
 }
-.btn-primary:hover{background:#1D4ED8;}
+.btn-primary:hover{background:var(--blue-hover);}
