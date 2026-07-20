@@ -81,7 +81,12 @@ body{
   color:var(--txt-sub);flex-shrink:0;font-weight:500;
 }
 .badge.late{background:var(--red-soft);color:var(--red);font-weight:700;}
+.badge.skip{background:#E5E7EB;color:var(--txt-sub);font-weight:600;}
+.badge.done{background:var(--blue-soft);color:var(--blue);font-weight:600;}
 .clip{color:var(--txt-faint);font-size:12px;flex-shrink:0;}
+/* 건너뜀 회차: 체크박스는 점선·흐리게(비활성 느낌) — 클릭하면 완료 전환은 허용 */
+.task.skip .chk{border-style:dashed;opacity:.55;}
+.task.skip .task-name{color:var(--txt-faint);}
 
 /* ── 상세(메모·링크) 펼침 ─────────────────────────── */
 .task-detail{
@@ -95,6 +100,21 @@ body{
   padding:2px 8px;border-radius:5px;font-size:11.5px;cursor:pointer;
 }
 .task-detail a:hover{text-decoration:underline;}
+/* 회차 제어(건너뛰기 · 완료 메모) */
+.chk-controls{margin-top:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.btn-mini{
+  border:1px solid var(--line);background:var(--card);color:var(--txt-sub);
+  border-radius:6px;padding:4px 10px;font-size:11.5px;cursor:pointer;font-family:inherit;
+}
+.btn-mini:hover{border-color:#C7CDD6;color:var(--txt);}
+.memo-line{display:flex;align-items:center;gap:6px;flex:1;min-width:160px;}
+.check-memo{
+  flex:1;border:1px solid var(--line);border-radius:6px;padding:5px 8px;
+  font-family:inherit;font-size:12px;color:var(--txt);background:var(--card);
+}
+.check-memo:focus{outline:2px solid var(--blue);outline-offset:-1px;border-color:var(--blue);}
+.memo-ok{color:var(--green);font-size:11.5px;font-weight:700;opacity:0;transition:opacity .2s;white-space:nowrap;}
+.memo-ok.show{opacity:1;}
 
 /* ── 주간 수행률 푸터 ─────────────────────────── */
 .week-progress{
@@ -167,6 +187,21 @@ body{
 .heat .miss{background:var(--red-soft);color:var(--red);}
 .heat .future{opacity:.4;}
 .heat .dow{background:none;font-size:10px;font-weight:700;}
+.heat .cell.clickable{cursor:pointer;}
+.heat .cell.clickable:hover{outline:2px solid var(--blue);outline-offset:-2px;}
+
+/* 소급 체크 모달: 회차 목록 */
+.day-occ{border-bottom:1px solid var(--line);padding:10px 0;}
+.day-occ:last-child{border-bottom:none;}
+.day-occ-head{display:flex;align-items:center;gap:8px;margin-bottom:8px;}
+.day-occ-head .task-name{font-size:13.5px;font-weight:500;}
+.day-occ-btns{display:flex;gap:6px;}
+.dob{
+  border:1px solid var(--line);background:var(--card);color:var(--txt-sub);
+  border-radius:6px;padding:5px 12px;font-size:12px;cursor:pointer;font-family:inherit;
+}
+.dob:hover{border-color:#C7CDD6;color:var(--txt);}
+.dob[data-active]{background:var(--blue);color:#fff;border-color:var(--blue);font-weight:600;}
 
 /* ── 설정 탭 (신규, 동일 스타일) ─────────────────────────── */
 .settings h1{font-size:20px;font-weight:800;margin-bottom:14px;}

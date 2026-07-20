@@ -62,6 +62,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_today_view,
             commands::toggle_check,
+            commands::set_check_status,
+            commands::set_check_memo,
+            commands::get_day_view,
             commands::list_tasks,
             commands::add_task,
             commands::update_task,

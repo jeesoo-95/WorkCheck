@@ -34,6 +34,14 @@ pub struct Holiday {
     pub name: String,
 }
 
+/// CheckLog 한 회차의 상태 스냅샷 (내부 판정용, 프론트 전송 X).
+/// status: 'done'(완료) | 'skip'(건너뜀). memo: 완료 메모(선택).
+#[derive(Debug, Clone)]
+pub struct CheckInfo {
+    pub status: String,
+    pub memo: Option<String>,
+}
+
 /// list_tasks 응답 항목: Task 전체 필드 + doneOnce(1회성 완료 여부).
 /// DB 로딩용 Task 는 그대로 두고, flatten 으로 응답에만 doneOnce 를 덧붙인다.
 #[derive(Debug, Clone, Serialize)]
@@ -74,7 +82,9 @@ pub struct TaskOccurrence {
     pub recur_param: Option<String>,
     pub due_date: String,
     pub rule_label: String,             // "매주 · 금" 등 표시용 라벨
-    pub checked: bool,
+    pub status: String,                 // "none"(미체크) | "done"(완료) | "skip"(건너뜀)
+    pub checked: bool,                  // 하위호환: status=="done" 와 동일
+    pub check_memo: Option<String>,     // 완료 메모(회차별, Task.memo 와 별개)
     pub days_late: i64,                 // 밀림 D+n (오늘/다가오는건 0)
     pub upcoming_label: Option<String>, // "분기 · 7/31 예정" 등
 }
@@ -90,12 +100,14 @@ pub struct TodayView {
     pub week_rate: f64,
 }
 
-/// 통계 탭 히트맵 셀
+/// 통계 탭 히트맵 셀.
+/// total/done 은 skip 회차를 제외한 값(수행률 분모와 동일). skipped 는 그날 skip 회차 수.
 #[derive(Debug, Serialize)]
 pub struct HeatCell {
     pub date: String,
     pub done: i64,
     pub total: i64,
+    pub skipped: i64,
 }
 
 /// 통계 탭 응답

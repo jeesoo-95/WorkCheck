@@ -67,6 +67,8 @@ function taskRowHtml(occ, opts) {
   const links = parseLinks(occ.links);
   const hasDetail = !!(occ.memo || links.length);
   const badges = [];
+  // 건너뜀 상태는 이름 옆 회색 배지로 먼저 표시
+  if (occ.status === 'skip') badges.push('<span class="badge skip">건너뜀</span>');
   // 예정 라벨이 있으면 규칙 배지와 내용이 겹치므로 예정 라벨만 표시
   if (!occ.upcomingLabel) badges.push(`<span class="badge">${esc(occ.ruleLabel)}</span>`);
   if (occ.daysLate > 0) badges.push(`<span class="badge late">D+${occ.daysLate}</span>`);
@@ -74,31 +76,51 @@ function taskRowHtml(occ, opts) {
 
   const cls = ['task'];
   if (occ.checked) cls.push('done');
+  if (occ.status === 'skip') cls.push('skip');
   if (opts.overdue) cls.push('overdue');
   if (opts.upcoming) cls.push('upcoming');
 
   const chkDisabled = opts.upcoming ? ' disabled' : '';
   const clip = hasDetail ? '<span class="clip">📎</span>' : '';
 
-  return `<div class="${cls.join(' ')}" data-task-id="${occ.taskId}" data-due="${esc(occ.dueDate)}" data-upcoming="${opts.upcoming ? 1 : 0}">
+  return `<div class="${cls.join(' ')}" data-task-id="${occ.taskId}" data-due="${esc(occ.dueDate)}" data-status="${esc(occ.status)}" data-upcoming="${opts.upcoming ? 1 : 0}">
     <div class="task-row" tabindex="0" role="button" aria-label="${esc(occ.name)}">
       <div class="chk${chkDisabled}">✓</div>
       <div class="task-name">${esc(occ.name)}</div>
       ${clip}
       ${badges.join('')}
     </div>
-    <div class="task-detail">${detailHtml(occ, links)}</div>
+    <div class="task-detail">${detailHtml(occ, links, opts)}</div>
   </div>`;
 }
-function detailHtml(occ, links) {
+function detailHtml(occ, links, opts) {
+  opts = opts || {};
+  // 1) 업무 메모/링크
+  let h;
   if (!occ.memo && !links.length) {
-    return '<span style="color:var(--txt-faint)">메모 없음 — 전체 업무 탭에서 수정할 수 있습니다</span>';
+    h = '<span style="color:var(--txt-faint)">메모 없음 — 전체 업무 탭에서 수정할 수 있습니다</span>';
+  } else {
+    h = occ.memo ? '📝 ' + esc(occ.memo) : '';
+    if (links.length) {
+      h += '<div class="links">' + links.map((l) =>
+        `<a data-url="${esc(l.url || '')}" title="클릭하면 링크 복사">🔗 ${esc(l.title || l.url || '링크')}</a>`
+      ).join('') + '</div>';
+    }
   }
-  let h = occ.memo ? '📝 ' + esc(occ.memo) : '';
-  if (links.length) {
-    h += '<div class="links">' + links.map((l, i) =>
-      `<a data-url="${esc(l.url || '')}" title="클릭하면 링크 복사">🔗 ${esc(l.title || l.url || '링크')}</a>`
-    ).join('') + '</div>';
+  // 2) 회차 제어 (오늘 탭 실제 회차만 — 다가오는 업무 제외)
+  if (!opts.upcoming) {
+    let ctl = '<div class="chk-controls">';
+    if (occ.status === 'skip') {
+      ctl += '<button class="btn-mini btn-skip-off">건너뛰기 해제</button>';
+    } else {
+      ctl += '<button class="btn-mini btn-skip">건너뛰기</button>';
+    }
+    // 완료(done) 회차에만 완료 메모 입력칸
+    if (occ.status === 'done') {
+      ctl += `<span class="memo-line"><input class="check-memo" type="text" placeholder="완료 메모 (선택)" value="${esc(occ.checkMemo || '')}"><span class="memo-ok">✓ 저장됨</span></span>`;
+    }
+    ctl += '</div>';
+    h += ctl;
   }
   return h;
 }
@@ -118,6 +140,23 @@ function wireTaskEvents(container) {
       if (e.key === ' ') { e.preventDefault(); if (!isUpcoming) doToggle(task); }
       if (e.key === 'Enter') { e.preventDefault(); task.classList.toggle('open'); }
     });
+
+    // 건너뛰기 / 건너뛰기 해제
+    const skipBtn = task.querySelector('.btn-skip');
+    if (skipBtn) skipBtn.addEventListener('click', e => { e.stopPropagation(); doSetStatus(task, 'skip'); });
+    const skipOff = task.querySelector('.btn-skip-off');
+    if (skipOff) skipOff.addEventListener('click', e => { e.stopPropagation(); doSetStatus(task, 'none'); });
+
+    // 완료 메모 입력 (Enter 또는 blur 시 저장)
+    const memoInput = task.querySelector('.check-memo');
+    if (memoInput) {
+      memoInput.addEventListener('click', e => e.stopPropagation());
+      memoInput.addEventListener('keydown', e => {
+        e.stopPropagation();
+        if (e.key === 'Enter') { e.preventDefault(); memoInput.blur(); }
+      });
+      memoInput.addEventListener('blur', () => saveCheckMemo(task, memoInput));
+    }
   });
   // 링크 클릭 → 클립보드 복사
   container.querySelectorAll('.task-detail a').forEach(a => {
@@ -137,10 +176,39 @@ async function doToggle(task) {
   const taskId = Number(task.dataset.taskId);
   const due = task.dataset.due;
   try {
-    await invoke('toggle_check', { taskId, dueDate: due });
+    // 건너뜀 상태에서 체크박스 클릭 → 완료(done)로 전환.
+    // 그 외(none/done)는 기존 토글(none↔done) 유지.
+    if (task.dataset.status === 'skip') {
+      await invoke('set_check_status', { taskId, dueDate: due, status: 'done', memo: null });
+    } else {
+      await invoke('toggle_check', { taskId, dueDate: due });
+    }
     clearError();
     loadToday();
   } catch (e) { showError(e.message || e, () => doToggle(task)); }
+}
+// 회차 상태 설정 (건너뛰기/해제) 후 오늘 탭 새로고침
+async function doSetStatus(task, status) {
+  const taskId = Number(task.dataset.taskId);
+  const due = task.dataset.due;
+  try {
+    await invoke('set_check_status', { taskId, dueDate: due, status, memo: null });
+    clearError();
+    loadToday();
+  } catch (e) { showError(e.message || e, () => doSetStatus(task, status)); }
+}
+// 완료 메모 저장 (변경 시에만). 저장되면 ✓ 잠깐 표시.
+async function saveCheckMemo(task, input) {
+  if (input.value === input.defaultValue) return; // 변경 없음 → 저장 생략
+  const taskId = Number(task.dataset.taskId);
+  const due = task.dataset.due;
+  try {
+    await invoke('set_check_memo', { taskId, dueDate: due, memo: input.value });
+    clearError();
+    input.defaultValue = input.value; // 다음 blur 중복 저장 방지
+    const ok = input.nextElementSibling; // .memo-ok
+    if (ok) { ok.classList.add('show'); setTimeout(() => ok.classList.remove('show'), 1400); }
+  } catch (e) { showError(e.message || e, null); }
 }
 
 // ── 오늘 탭 ──────────────────────────────────────────────
@@ -154,13 +222,15 @@ async function loadToday() {
   document.getElementById('today-date').textContent =
     `${dt.getMonth() + 1}월 ${dt.getDate()}일 (${WEEKDAY_KO[dt.getDay()]})`;
 
-  // 요약
-  const total = v.today.length;
-  const done = v.today.filter(t => t.checked).length;
+  // 요약 (스킵 회차는 분모에서 제외 — 수행률 계산과 동일 기준)
+  const skipped = v.today.filter(t => t.status === 'skip').length;
+  const total = v.today.length - skipped;
+  const done = v.today.filter(t => t.status === 'done').length;
   const late = v.overdue.length;
   document.getElementById('summary').innerHTML =
     `오늘 <b>${total}건 중 ${done}건 완료</b>` +
-    (late ? ` · <span class="overdue-cnt">밀림 ${late}건</span>` : (total ? ' · 밀림 없음 👍' : ''));
+    (skipped ? ` · 건너뜀 ${skipped}건` : '') +
+    (late ? ` · <span class="overdue-cnt">밀림 ${late}건</span>` : (total || skipped ? ' · 밀림 없음 👍' : ''));
 
   // 밀림
   const secOver = document.getElementById('sec-overdue');
@@ -399,15 +469,25 @@ async function loadStats() {
     for (let i = 0; i < first.getDay(); i++) heat.insertAdjacentHTML('beforeend', '<div class="cell" style="background:none"></div>');
     s.heatmap.forEach(c => {
       const day = Number(c.date.slice(8, 10));
+      const skipped = c.skipped || 0;
+      const hasOcc = (c.total + skipped) > 0;      // skip 만 있는 날도 회차 있음
+      const isPast = c.date <= todayStr;
       let cls = '';
-      if (c.date > todayStr) cls = 'future'; // 미래 날짜는 중립 표시
-      else if (c.total === 0) cls = '';
+      if (c.date > todayStr) cls = 'future';       // 미래 날짜는 중립 표시
+      else if (c.total === 0) cls = '';            // 회차 없음 또는 전부 skip → 중립(회색)
       else if (c.done === 0) cls = 'miss';
       else {
         const r = c.done / c.total;
         cls = r >= 1 ? 'c3' : (r >= 0.5 ? 'c2' : 'c1');
       }
-      heat.insertAdjacentHTML('beforeend', `<div class="cell ${cls}">${day}</div>`);
+      // 과거·오늘이면서 회차가 있는 날만 소급 체크 가능
+      const clickable = isPast && hasOcc;
+      if (clickable) cls += ' clickable';
+      heat.insertAdjacentHTML('beforeend', `<div class="cell ${cls.trim()}" data-date="${c.date}"${clickable ? ' title="클릭하면 소급 체크"' : ''}>${day}</div>`);
+    });
+    // 소급 체크: 클릭 가능한 셀 → 회차 모달
+    heat.querySelectorAll('.cell.clickable').forEach(cell => {
+      cell.addEventListener('click', () => openDayModal(cell.dataset.date));
     });
   }
 }
@@ -415,6 +495,58 @@ function setRate(prefix, r) {
   const p = pct(r);
   document.getElementById(prefix + '-bar').style.width = p + '%';
   document.getElementById(prefix + '-rv').textContent = p + '%';
+}
+
+// ── 소급 체크(회차) 모달 ──────────────────────────────────
+const dayModalBack = document.getElementById('day-modal-back');
+function closeDayModal() { dayModalBack.classList.remove('show'); }
+document.getElementById('day-modal-close').addEventListener('click', closeDayModal);
+dayModalBack.addEventListener('click', e => { if (e.target === dayModalBack) closeDayModal(); });
+
+async function openDayModal(date) {
+  let occ;
+  try { occ = await invoke('get_day_view', { date }); clearError(); }
+  catch (e) { showError(e.message || e, null); return; }
+  document.getElementById('day-modal-title').textContent = `${date} 회차`;
+  renderDayModal(date, occ);
+  dayModalBack.classList.add('show');
+}
+function dayBadge(status) {
+  if (status === 'done') return '<span class="badge done">완료</span>';
+  if (status === 'skip') return '<span class="badge skip">건너뜀</span>';
+  return '<span class="badge">미완료</span>';
+}
+function renderDayModal(date, occ) {
+  const body = document.getElementById('day-modal-body');
+  if (!occ.length) {
+    body.innerHTML = '<div class="empty">이 날짜에 예정된 회차가 없습니다.</div>';
+    return;
+  }
+  body.innerHTML = occ.map(o => `
+    <div class="day-occ" data-task-id="${o.taskId}" data-due="${esc(o.dueDate)}">
+      <div class="day-occ-head"><span class="task-name">${esc(o.name)}</span>${dayBadge(o.status)}</div>
+      <div class="day-occ-btns">
+        <button class="dob" data-st="done"${o.status === 'done' ? ' data-active="1"' : ''}>완료</button>
+        <button class="dob" data-st="skip"${o.status === 'skip' ? ' data-active="1"' : ''}>건너뜀</button>
+        <button class="dob" data-st="none"${o.status === 'none' ? ' data-active="1"' : ''}>해제</button>
+      </div>
+    </div>`).join('');
+
+  body.querySelectorAll('.day-occ').forEach(row => {
+    const taskId = Number(row.dataset.taskId);
+    const due = row.dataset.due;
+    row.querySelectorAll('.dob').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        try {
+          await invoke('set_check_status', { taskId, dueDate: due, status: btn.dataset.st, memo: null });
+          clearError();
+          const fresh = await invoke('get_day_view', { date }); // 모달 목록 갱신
+          renderDayModal(date, fresh);
+          loadStats(); // 통계·히트맵 갱신
+        } catch (e) { showError(e.message || e, null); }
+      });
+    });
+  });
 }
 
 // ── 설정 탭 ──────────────────────────────────────────────

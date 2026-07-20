@@ -16,8 +16,15 @@ pub fn open(db_path: &Path) -> Result<Connection, String> {
     Ok(conn)
 }
 
-/// 테이블 생성 (기획서 4장 스키마)
+/// 스키마 마이그레이션 — PRAGMA user_version 기반 버전 관리.
+///
+/// - v1: 기본 테이블(Task/CheckLog/Setting/Holiday). 버전 도입 이전 스키마이며,
+///   기존 DB 와 신규 DB 모두 user_version=0 으로 시작한다(v1 로 간주).
+/// - v2: CheckLog 에 status('done'|'skip') · memo 컬럼 추가 (소급 체크·스킵·완료 메모).
+///
+/// 기존 v1 DB(컬럼 없음)와 신규 DB 모두 아래 CREATE(v1 기준) → v2 ALTER 경로를 거친다.
 fn migrate(conn: &Connection) -> Result<(), String> {
+    // v1 기본 테이블 (버전 무관 idempotent)
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS Task (
@@ -48,7 +55,25 @@ fn migrate(conn: &Connection) -> Result<(), String> {
         );
         "#,
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+
+    // v2: CheckLog.status / CheckLog.memo 추가. 기존 행은 DEFAULT 'done' 로 채워짐.
+    if version < 2 {
+        conn.execute_batch(
+            r#"
+            ALTER TABLE CheckLog ADD COLUMN status TEXT NOT NULL DEFAULT 'done';
+            ALTER TABLE CheckLog ADD COLUMN memo TEXT;
+            PRAGMA user_version = 2;
+            "#,
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
 }
 
 /// 최초 실행 시 기본 설정값 + 2026 공휴일 시드
@@ -116,4 +141,76 @@ fn seed(conn: &Connection) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+// ── 단위 테스트 ──────────────────────────────────────────
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// CheckLog 에 status/memo 컬럼이 있는지 + user_version 확인
+    fn has_columns(conn: &Connection) -> (bool, bool, i64) {
+        let mut has_status = false;
+        let mut has_memo = false;
+        let mut stmt = conn.prepare("PRAGMA table_info(CheckLog)").unwrap();
+        let cols = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .map(|c| c.unwrap())
+            .collect::<Vec<_>>();
+        for c in &cols {
+            if c == "status" {
+                has_status = true;
+            }
+            if c == "memo" {
+                has_memo = true;
+            }
+        }
+        let ver: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        (has_status, has_memo, ver)
+    }
+
+    // 신규 DB: migrate 1회로 v2 컬럼 생성 + user_version=2
+    #[test]
+    fn migrate_fresh_db_to_v2() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        assert_eq!(has_columns(&conn), (true, true, 2));
+    }
+
+    // 기존 v1 DB(컬럼 없음, user_version=0): migrate 로 자동 업그레이드
+    #[test]
+    fn migrate_v1_db_upgrades() {
+        let conn = Connection::open_in_memory().unwrap();
+        // v1 스키마 재현 (status/memo 없음, user_version 미설정=0)
+        conn.execute_batch(
+            r#"
+            CREATE TABLE CheckLog (
+                id          INTEGER PRIMARY KEY,
+                task_id     INTEGER NOT NULL,
+                due_date    TEXT NOT NULL,
+                checked_at  TEXT NOT NULL,
+                UNIQUE(task_id, due_date)
+            );
+            INSERT INTO CheckLog(task_id, due_date, checked_at) VALUES(1, '2026-07-01', '2026-07-01 09:00:00');
+            "#,
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        assert_eq!(has_columns(&conn), (true, true, 2));
+        // 기존 행은 DEFAULT 'done' 으로 채워짐
+        let status: String = conn
+            .query_row("SELECT status FROM CheckLog WHERE task_id=1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "done");
+    }
+
+    // 재실행 idempotent: 이미 v2 인 DB 에 migrate 를 또 호출해도 안전
+    #[test]
+    fn migrate_idempotent_on_v2() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap(); // 두 번째 호출은 ALTER 건너뜀
+        assert_eq!(has_columns(&conn), (true, true, 2));
+    }
 }

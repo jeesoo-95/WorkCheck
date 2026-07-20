@@ -5,7 +5,7 @@ use crate::model::*;
 use crate::recur;
 use chrono::{Datelike, Duration, Local, NaiveDate};
 use rusqlite::{params, Connection};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use tauri::State;
 
@@ -70,26 +70,46 @@ fn load_holidays(conn: &Connection) -> Result<HashSet<NaiveDate>, String> {
     Ok(set)
 }
 
-/// (task_id, due_date) 체크 이력 집합
-fn load_checks(conn: &Connection) -> Result<HashSet<(i64, String)>, String> {
+/// (task_id, due_date) → CheckInfo(status, memo) 체크 이력 맵.
+/// 존재 여부만 필요한 곳은 contains_key, 상태 판정이 필요한 곳은 값을 본다.
+fn load_checks(conn: &Connection) -> Result<HashMap<(i64, String), CheckInfo>, String> {
     let mut stmt = conn
-        .prepare("SELECT task_id, due_date FROM CheckLog")
+        .prepare("SELECT task_id, due_date, status, memo FROM CheckLog")
         .map_err(e2s)?;
     let rows = stmt
-        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+        .query_map([], |r| {
+            Ok((
+                (r.get::<_, i64>(0)?, r.get::<_, String>(1)?),
+                CheckInfo {
+                    status: r.get::<_, String>(2)?,
+                    memo: r.get::<_, Option<String>>(3)?,
+                },
+            ))
+        })
         .map_err(e2s)?;
-    let mut set = HashSet::new();
+    let mut map = HashMap::new();
     for row in rows {
-        set.insert(row.map_err(e2s)?);
+        let (k, v) = row.map_err(e2s)?;
+        map.insert(k, v);
     }
-    Ok(set)
+    Ok(map)
 }
 
-/// TaskOccurrence 생성 헬퍼
+/// 체크 맵에서 (task_id, due_date) 의 상태 문자열. 없으면 "none".
+fn status_of(checks: &HashMap<(i64, String), CheckInfo>, task_id: i64, due: &str) -> String {
+    checks
+        .get(&(task_id, due.to_string()))
+        .map(|c| c.status.clone())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+/// TaskOccurrence 생성 헬퍼.
+/// status: "none"|"done"|"skip". checked 는 status=="done" 로 파생(하위호환).
 fn make_occ(
     t: &Task,
     due_date: &str,
-    checked: bool,
+    status: &str,
+    check_memo: Option<String>,
     days_late: i64,
     upcoming_label: Option<String>,
 ) -> TaskOccurrence {
@@ -103,15 +123,18 @@ fn make_occ(
         recur_param: t.recur_param.clone(),
         due_date: due_date.to_string(),
         rule_label: recur::rule_label(&t.recur_type, param),
-        checked,
+        status: status.to_string(),
+        checked: status == "done",
+        check_memo,
         days_late,
         upcoming_label,
     }
 }
 
 /// 1회성(once) 완료 여부: recur_type=="once" 이고 지정 기한일(param.date)에
-/// 체크 이력이 있으면 true. 그 외 주기는 항상 false.
-fn is_done_once(t: &Task, checks: &HashSet<(i64, String)>) -> bool {
+/// 완료(status=="done") 이력이 있으면 true. 건너뜀(skip)은 완료가 아니므로 false.
+/// (기존 데이터는 전부 'done' 이라 v1 동작과 동일)
+fn is_done_once(t: &Task, checks: &HashMap<(i64, String), CheckInfo>) -> bool {
     if t.recur_type != "once" {
         return false;
     }
@@ -119,7 +142,7 @@ fn is_done_once(t: &Task, checks: &HashSet<(i64, String)>) -> bool {
         .as_deref()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
         .and_then(|v| v.get("date").and_then(|d| d.as_str()).map(String::from))
-        .map(|date| checks.contains(&(t.id, date)))
+        .map(|date| status_of(checks, t.id, &date) == "done")
         .unwrap_or(false)
 }
 
@@ -143,25 +166,44 @@ fn clamp_from(t: &Task, from: NaiveDate) -> NaiveDate {
     }
 }
 
-/// [from,to] 구간의 (완료수, 전체수) — 업무별로 생성일 이후만 집계
-fn range_stats(
+/// [from,to] 구간의 (완료수, 전체수, 건너뜀수) — 업무별로 생성일 이후만 집계.
+/// 수행률 정의: skip 회차는 분모·분자 모두 제외(전체수에 넣지 않음). done 만 분자.
+/// 즉 rate = done / (전체회차 - skip). skipped 는 별도로 반환(히트맵 회색 처리용).
+fn range_counts(
     tasks: &[Task],
     holidays: &HashSet<NaiveDate>,
-    checks: &HashSet<(i64, String)>,
+    checks: &HashMap<(i64, String), CheckInfo>,
     from: NaiveDate,
     to: NaiveDate,
-) -> (i64, i64) {
+) -> (i64, i64, i64) {
     let mut done = 0;
     let mut total = 0;
+    let mut skipped = 0;
     for t in tasks {
         let param = t.recur_param.as_deref().unwrap_or("{}");
         for d in recur::occurrences_between(&t.recur_type, param, clamp_from(t, from), to, holidays) {
-            total += 1;
-            if checks.contains(&(t.id, d.to_string())) {
-                done += 1;
+            match status_of(checks, t.id, &d.to_string()).as_str() {
+                "skip" => skipped += 1, // 분모·분자 모두 제외
+                "done" => {
+                    total += 1;
+                    done += 1;
+                }
+                _ => total += 1, // 미체크(none)
             }
         }
     }
+    (done, total, skipped)
+}
+
+/// [from,to] 구간의 (완료수, 전체수) — skip 제외. range_counts 의 얇은 래퍼.
+fn range_stats(
+    tasks: &[Task],
+    holidays: &HashSet<NaiveDate>,
+    checks: &HashMap<(i64, String), CheckInfo>,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> (i64, i64) {
+    let (done, total, _skipped) = range_counts(tasks, holidays, checks, from, to);
     (done, total)
 }
 
@@ -184,7 +226,7 @@ fn week_start(today: NaiveDate) -> NaiveDate {
 fn compute_overdue_today(
     tasks: &[Task],
     holidays: &HashSet<NaiveDate>,
-    checks: &HashSet<(i64, String)>,
+    checks: &HashMap<(i64, String), CheckInfo>,
     today: NaiveDate,
 ) -> (Vec<TaskOccurrence>, Vec<TaskOccurrence>) {
     let mut overdue = Vec::new();
@@ -193,23 +235,26 @@ fn compute_overdue_today(
     for t in tasks {
         let param = t.recur_param.as_deref().unwrap_or("{}");
 
-        // 오늘 기한 (완료 여부와 무관하게 표시 — 목업의 done 행 포함)
+        // 오늘 기한 (완료/건너뜀 여부와 무관하게 표시 — 상태 배지·메모 포함)
         let today_occ = recur::occurrences_between(&t.recur_type, param, today, today, holidays);
         if !today_occ.is_empty() {
             let due = today.to_string();
-            let checked = checks.contains(&(t.id, due.clone()));
-            today_list.push(make_occ(t, &due, checked, 0, None));
+            let info = checks.get(&(t.id, due.clone()));
+            let status = info.map(|c| c.status.clone()).unwrap_or_else(|| "none".to_string());
+            let memo = info.and_then(|c| c.memo.clone());
+            today_list.push(make_occ(t, &due, &status, memo, 0, None));
         }
 
-        // 밀림: 오늘 이전 가장 최근 기한일이 미체크면 D+n (최근 120일, 생성일 이후만)
+        // 밀림: 오늘 이전 가장 최근 기한일에 기록이 없으면(done/skip 어느 쪽도 아님) D+n.
+        // skip 도 CheckLog 기록이 있으므로 밀림이 아님(존재 여부 기준 유지).
         let past_from = clamp_from(t, today - Duration::days(120));
         let past =
             recur::occurrences_between(&t.recur_type, param, past_from, today - Duration::days(1), holidays);
         if let Some(&last) = past.last() {
             let due = last.to_string();
-            if !checks.contains(&(t.id, due.clone())) {
+            if !checks.contains_key(&(t.id, due.clone())) {
                 let days = (today - last).num_days();
-                overdue.push(make_occ(t, &due, false, days, None));
+                overdue.push(make_occ(t, &due, "none", None, days, None));
             }
         }
     }
@@ -251,7 +296,7 @@ pub fn get_today_view(state: State<AppState>) -> Result<TodayView, String> {
                     next.month(),
                     next.day()
                 );
-                upcoming.push(make_occ(t, &due, false, 0, Some(label)));
+                upcoming.push(make_occ(t, &due, "none", None, 0, Some(label)));
             }
         }
     }
@@ -372,6 +417,104 @@ pub fn toggle_check(
     Ok(())
 }
 
+/// 회차 상태 설정 (완료/건너뜀/해제).
+/// - "none": 해당 회차 기록 삭제
+/// - "done"/"skip": INSERT OR REPLACE (checked_at 갱신, memo 반영)
+/// - 그 외 값: Err
+#[tauri::command]
+pub fn set_check_status(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    task_id: i64,
+    due_date: String,
+    status: String,
+    memo: Option<String>,
+) -> Result<(), String> {
+    {
+        let conn = state.db.lock().map_err(e2s)?;
+        match status.as_str() {
+            "none" => {
+                conn.execute(
+                    "DELETE FROM CheckLog WHERE task_id=?1 AND due_date=?2",
+                    params![task_id, due_date],
+                )
+                .map_err(e2s)?;
+            }
+            "done" | "skip" => {
+                // memo가 None이면 기존 메모 보존 (소급 모달의 상태 변경이 메모를 지우지 않도록)
+                conn.execute(
+                    "INSERT INTO CheckLog(task_id, due_date, checked_at, status, memo) \
+                     VALUES(?1, ?2, ?3, ?4, ?5) \
+                     ON CONFLICT(task_id, due_date) DO UPDATE SET \
+                       checked_at=excluded.checked_at, status=excluded.status, \
+                       memo=COALESCE(excluded.memo, CheckLog.memo)",
+                    params![task_id, due_date, now_str(), status, memo],
+                )
+                .map_err(e2s)?;
+            }
+            _ => return Err(format!("알 수 없는 상태입니다: {}", status)),
+        }
+    }
+    crate::tray::update_tooltip(&app);
+    Ok(())
+}
+
+/// 기존 회차의 완료 메모만 갱신. 체크 기록이 없으면 Err.
+#[tauri::command]
+pub fn set_check_memo(
+    state: State<AppState>,
+    task_id: i64,
+    due_date: String,
+    memo: String,
+) -> Result<(), String> {
+    let conn = state.db.lock().map_err(e2s)?;
+    let n = conn
+        .execute(
+            "UPDATE CheckLog SET memo=?1 WHERE task_id=?2 AND due_date=?3",
+            params![memo, task_id, due_date],
+        )
+        .map_err(e2s)?;
+    if n == 0 {
+        return Err("체크된 회차가 없습니다".to_string());
+    }
+    Ok(())
+}
+
+/// 소급 체크용 — 지정 날짜(과거·오늘만)의 기한 회차 목록 + status/memo.
+/// 미래 날짜면 빈 목록. 생성일 클램프는 다른 화면과 동일하게 적용.
+#[tauri::command]
+pub fn get_day_view(state: State<AppState>, date: String) -> Result<Vec<TaskOccurrence>, String> {
+    let conn = state.db.lock().map_err(e2s)?;
+    let today = Local::now().date_naive();
+    let target = NaiveDate::parse_from_str(&date, "%Y-%m-%d").map_err(e2s)?;
+    // 미래 날짜는 소급 대상이 아님
+    if target > today {
+        return Ok(Vec::new());
+    }
+    let tasks = load_tasks(&conn)?;
+    let holidays = load_holidays(&conn)?;
+    let checks = load_checks(&conn)?;
+
+    let mut out = Vec::new();
+    for t in &tasks {
+        // 생성일 이후만 (once 제외 클램프). target 이 생성일 이전이면 회차 아님.
+        if clamp_from(t, target) > target {
+            continue;
+        }
+        let param = t.recur_param.as_deref().unwrap_or("{}");
+        let occ = recur::occurrences_between(&t.recur_type, param, target, target, &holidays);
+        if !occ.is_empty() {
+            let due = target.to_string();
+            let info = checks.get(&(t.id, due.clone()));
+            let status = info.map(|c| c.status.clone()).unwrap_or_else(|| "none".to_string());
+            let memo = info.and_then(|c| c.memo.clone());
+            let days = (today - target).num_days();
+            out.push(make_occ(t, &due, &status, memo, days, None));
+        }
+    }
+    Ok(out)
+}
+
 // ── 업무 CRUD ────────────────────────────────────────────
 
 #[tauri::command]
@@ -462,6 +605,8 @@ pub fn get_stats(state: State<AppState>) -> Result<Stats, String> {
 
     // 연속 달성일: 오늘부터 과거로, 기한 있는 날 전부 완료면 +1.
     // 오늘이 미완료면 오늘은 건너뛴다(진행 중이므로 스트릭을 끊지 않음).
+    // skip 회차는 range_stats 의 total 에서 제외되므로, 그날이 전부 skip 이면
+    // total==0 이 되어 스트릭을 끊지 않고 자연히 건너뛴다.
     let mut streak_days = 0i64;
     let mut d = today;
     for _ in 0..120 {
@@ -497,11 +642,12 @@ pub fn get_stats(state: State<AppState>) -> Result<Stats, String> {
     let mut heatmap = Vec::new();
     for day in 1..=last_day {
         let date = NaiveDate::from_ymd_opt(today.year(), today.month(), day).unwrap();
-        let (done, total) = range_stats(&tasks, &holidays, &checks, date, date);
+        let (done, total, skipped) = range_counts(&tasks, &holidays, &checks, date, date);
         heatmap.push(HeatCell {
             date: date.to_string(),
             done,
             total,
+            skipped,
         });
     }
 
@@ -620,5 +766,87 @@ pub fn set_autostart(app: tauri::AppHandle, enable: bool) -> Result<(), String> 
         m.enable().map_err(e2s)
     } else {
         m.disable().map_err(e2s)
+    }
+}
+
+// ── 단위 테스트 ──────────────────────────────────────────
+// range_stats / range_counts 는 Connection 없이 동작하는 순수 함수라 여기서 검증한다.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn d(y: i32, m: u32, day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, day).unwrap()
+    }
+
+    /// 매일(daily) 업무 하나 생성 (생성일은 충분히 과거).
+    fn daily_task(id: i64) -> Task {
+        Task {
+            id,
+            name: format!("t{}", id),
+            memo: None,
+            links: None,
+            recur_type: "daily".to_string(),
+            recur_param: Some("{}".to_string()),
+            active: 1,
+            sort_order: Some(0),
+            created_at: Some("2020-01-01".to_string()),
+        }
+    }
+
+    fn ci(status: &str) -> CheckInfo {
+        CheckInfo {
+            status: status.to_string(),
+            memo: None,
+        }
+    }
+
+    // 1) skip 회차는 분모(total)·분자(done) 모두에서 제외된다.
+    #[test]
+    fn range_stats_skip_excluded_from_denominator() {
+        let tasks = vec![daily_task(1)];
+        let holidays: HashSet<NaiveDate> = HashSet::new();
+        let mut checks: HashMap<(i64, String), CheckInfo> = HashMap::new();
+        // 3일 구간(20~22): 20 done, 21 skip, 22 none
+        checks.insert((1, "2026-07-20".to_string()), ci("done"));
+        checks.insert((1, "2026-07-21".to_string()), ci("skip"));
+
+        let (done, total, skipped) =
+            range_counts(&tasks, &holidays, &checks, d(2026, 7, 20), d(2026, 7, 22));
+        // skip 1건 제외 → 전체 3회차 중 total=2(20 done, 22 none), done=1, skipped=1
+        assert_eq!((done, total, skipped), (1, 2, 1));
+        // range_stats 래퍼는 (done, total) 만 반환
+        assert_eq!(
+            range_stats(&tasks, &holidays, &checks, d(2026, 7, 20), d(2026, 7, 22)),
+            (1, 2)
+        );
+    }
+
+    // 2) done 집계: 모두 완료면 done==total, skipped==0. rate=100%.
+    #[test]
+    fn range_stats_all_done() {
+        let tasks = vec![daily_task(1)];
+        let holidays: HashSet<NaiveDate> = HashSet::new();
+        let mut checks: HashMap<(i64, String), CheckInfo> = HashMap::new();
+        checks.insert((1, "2026-07-20".to_string()), ci("done"));
+        checks.insert((1, "2026-07-21".to_string()), ci("done"));
+
+        let (done, total, skipped) =
+            range_counts(&tasks, &holidays, &checks, d(2026, 7, 20), d(2026, 7, 21));
+        assert_eq!((done, total, skipped), (2, 2, 0));
+        assert_eq!(rate(done, total), 1.0);
+    }
+
+    // 3) 전부 skip 인 날은 total==0 → 스트릭·수행률에서 자연히 제외된다.
+    #[test]
+    fn range_stats_all_skip_yields_zero_total() {
+        let tasks = vec![daily_task(1)];
+        let holidays: HashSet<NaiveDate> = HashSet::new();
+        let mut checks: HashMap<(i64, String), CheckInfo> = HashMap::new();
+        checks.insert((1, "2026-07-20".to_string()), ci("skip"));
+
+        let (done, total, skipped) =
+            range_counts(&tasks, &holidays, &checks, d(2026, 7, 20), d(2026, 7, 20));
+        assert_eq!((done, total, skipped), (0, 0, 1));
     }
 }
