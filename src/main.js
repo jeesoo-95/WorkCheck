@@ -700,6 +700,10 @@ async function loadSettings() {
   document.getElementById('set-close-to-tray').checked = map.close_to_tray !== '0'; // 기본 1
   document.getElementById('set-auto-backup').checked = map.auto_backup !== '0';     // 기본 1
 
+  // 단축키 (Setting 값 그대로 표기, 빈 값=비활성)
+  document.getElementById('hk-toggle').value = map.hotkey_toggle || '';
+  document.getElementById('hk-quick').value = map.hotkey_quick || '';
+
   // 자동 시작 상태는 플러그인에서 조회 (Setting 아님)
   try { document.getElementById('set-autostart').checked = await invoke('get_autostart'); }
   catch (e) { /* 조회 실패 시 토글 기본값 유지 */ }
@@ -769,6 +773,27 @@ document.getElementById('set-autostart').addEventListener('change', async e => {
   catch (err) { showError(err.message || err, null); e.target.checked = !e.target.checked; }
 });
 
+// 단축키 적용 — 두 단축키를 각각 등록(set_hotkey). 실패한 항목만 사유 표시.
+// 성공 항목은 즉시 반영·저장되고, 실패 항목은 기존 단축키가 유지된다(백엔드 규약).
+document.getElementById('hk-apply').addEventListener('click', async () => {
+  const msg = document.getElementById('hk-msg');
+  const toggle = document.getElementById('hk-toggle').value.trim();
+  const quick = document.getElementById('hk-quick').value.trim();
+  const errs = [];
+  try { await invoke('set_hotkey', { kind: 'toggle', accel: toggle }); }
+  catch (e) { errs.push('창 토글: ' + (e.message || e)); }
+  try { await invoke('set_hotkey', { kind: 'quick', accel: quick }); }
+  catch (e) { errs.push('빠른 추가: ' + (e.message || e)); }
+  if (errs.length) {
+    msg.textContent = '✕ ' + errs.join(' / ');
+    msg.className = 'hk-msg err show';
+  } else {
+    msg.textContent = '✓ 적용됨';
+    msg.className = 'hk-msg ok show';
+    clearError();
+  }
+});
+
 // 알림 테스트 → 즉시 토스트 발송
 document.getElementById('set-notify-test').addEventListener('click', async () => {
   const ok = document.getElementById('set-notify-test-ok');
@@ -797,6 +822,19 @@ async function deleteHoliday(date) {
   catch (e) { showError(e.message || e, () => deleteHoliday(date)); }
 }
 
+// ── 빠른 추가 창 → 메인 갱신 ──────────────────────────
+// 빠른 추가 창에서 업무 등록 시 Rust 가 'task-added' 이벤트를 emit → 현재 탭만 새로고침.
+function reloadActiveTab() {
+  const active = document.querySelector('.tab.active');
+  const fn = active && loaders[active.dataset.page];
+  if (fn) fn();
+}
+function wireTaskAddedEvent() {
+  if (window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.listen) {
+    window.__TAURI__.event.listen('task-added', () => reloadActiveTab());
+  }
+}
+
 // ── 시작 ──────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
   if (!hasTauri()) {
@@ -804,4 +842,5 @@ window.addEventListener('DOMContentLoaded', () => {
   }
   loadTheme(); // 저장된 테마 로드→적용 (실패 시 시스템 따름)
   loadToday();
+  wireTaskAddedEvent(); // 빠른 추가 등록 시 현재 탭 자동 갱신
 });

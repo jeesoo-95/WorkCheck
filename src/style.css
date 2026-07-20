@@ -273,6 +273,15 @@ body{
   border:1px solid var(--line);border-radius:6px;padding:5px 8px;font-family:inherit;font-size:13px;
   background:var(--card);color:var(--txt);
 }
+/* 단축키 입력 */
+.hk-input{
+  border:1px solid var(--line);border-radius:6px;padding:5px 8px;font-family:inherit;font-size:13px;
+  background:var(--card);color:var(--txt);width:150px;
+}
+.hk-input:focus{outline:none;border-color:var(--blue);}
+.hk-msg{font-size:12px;font-weight:700;}
+.hk-msg.ok{color:var(--green);}
+.hk-msg.err{color:var(--red);}
 /* 토글 스위치 */
 .switch{position:relative;width:40px;height:22px;flex-shrink:0;}
 .switch input{opacity:0;width:0;height:0;}

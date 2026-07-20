@@ -101,6 +101,9 @@ fn seed(conn: &Connection) -> Result<(), String> {
         ("close_to_tray", "1"),
         ("theme", "system"),   // system(시스템 따름)|light|dark
         ("auto_backup", "1"),  // 1=앱 시작 시 자동 백업 1회
+        // M3-B5: 전역 단축키 (빈 문자열=비활성). Setting 값으로 setup 에서 등록.
+        ("hotkey_toggle", "Ctrl+Alt+W"), // 메인 창 표시/숨김 토글
+        ("hotkey_quick", "Ctrl+Alt+A"),  // 빠른 추가 소형 창 열기
     ];
     for (k, v) in defaults {
         conn.execute(

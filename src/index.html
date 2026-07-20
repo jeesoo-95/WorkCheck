@@ -134,6 +134,25 @@
     </div>
 
     <div class="set-group">
+      <h2>단축키 <span style="font-weight:400;color:var(--txt-faint);font-size:11px">(전역 · 다른 창에서도 동작)</span></h2>
+      <div class="set-row">
+        <div><div class="set-label">창 보이기/숨기기</div><div class="set-sub">메인 창을 토글합니다</div></div>
+        <input type="text" id="hk-toggle" class="hk-input" placeholder="예: Ctrl+Alt+W">
+      </div>
+      <div class="set-row">
+        <div><div class="set-label">빠른 추가</div><div class="set-sub">1회성 업무를 바로 등록하는 작은 창</div></div>
+        <input type="text" id="hk-quick" class="hk-input" placeholder="예: Ctrl+Alt+A">
+      </div>
+      <div class="set-row">
+        <div class="set-sub">형식: 수식키+키 (예: Ctrl+Alt+W, Ctrl+Shift+F9). 비우면 비활성화됩니다.</div>
+        <div class="test-wrap">
+          <button class="btn-ghost" id="hk-apply">적용</button>
+          <span class="hk-msg" id="hk-msg"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="set-group">
       <h2>데이터</h2>
       <div class="set-row">
         <div><div class="set-label">자동 백업</div><div class="set-sub">앱 시작 시 자동으로 1회 백업 (최근 7개 보관)</div></div>

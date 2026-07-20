@@ -2,12 +2,14 @@
 
 mod commands;
 mod db;
+mod hotkey;
 mod model;
 mod notify;
 mod recur;
 mod tray;
 
 use commands::AppState;
+use hotkey::HotkeyState;
 use std::sync::Mutex;
 use tauri::{Manager, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
@@ -51,6 +53,14 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .plugin(tauri_plugin_dialog::init())
+        // 전역 단축키: 콜백은 공통 하나(with_handler)로 등록, 분기는 hotkey::handle_shortcut 이 담당
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    hotkey::handle_shortcut(app, shortcut, event);
+                })
+                .build(),
+        )
         .setup(|app| {
             // DB 경로: app_data_dir(%APPDATA%\com.jeesoo.workcheck)\workcheck.db
             let dir = app.path().app_data_dir()?;
@@ -62,9 +72,14 @@ pub fn run() {
             app.manage(AppState {
                 db: Mutex::new(conn),
             });
+            // 전역 단축키 상태 (현재 등록된 Shortcut 보관)
+            app.manage(HotkeyState::default());
 
             // 트레이 상주 (아이콘 · 메뉴 · 툴팁)
             tray::build(app.handle())?;
+
+            // 전역 단축키 초기 등록 (Setting 값 기준)
+            hotkey::init(app.handle());
 
             // 창 닫기(X): close_to_tray=1 이면 종료 대신 트레이로 최소화(hide)
             if let Some(window) = app.get_webview_window("main") {
@@ -132,6 +147,9 @@ pub fn run() {
             commands::set_autostart,
             commands::backup_now,
             commands::restore_backup,
+            hotkey::set_hotkey,
+            hotkey::hide_quick_window,
+            hotkey::notify_task_added,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "빠른 추가 창 등록 시 메인 창이 task-added 이벤트를 수신해 오늘/전체 탭을 갱신하도록 허용",
+  "windows": ["main"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}
