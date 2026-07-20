@@ -202,6 +202,19 @@
         <label for="f-links">링크 (한 줄에 하나 — <code>제목|URL</code> 또는 URL)</label>
         <textarea id="f-links" placeholder="Jira 필터|https://..."></textarea>
       </div>
+
+      <!-- 알림 (선택) -->
+      <div class="modal-subhead">알림 (선택)</div>
+      <div class="field-row">
+        <div class="field">
+          <label for="f-notify-time">개별 알림 시각</label>
+          <input type="time" id="f-notify-time">
+        </div>
+        <div class="field" id="f-remind-wrap">
+          <label for="f-remind-before">기한 N일 전 미리 알림</label>
+          <input type="number" id="f-remind-before" min="1" max="30" placeholder="예: 3">
+        </div>
+      </div>
     </div>
     <div class="modal-foot">
       <button class="btn-ghost" id="modal-cancel">취소</button>

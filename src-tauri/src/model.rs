@@ -18,6 +18,8 @@ pub struct Task {
     pub active: i64,
     pub sort_order: Option<i64>,
     pub created_at: Option<String>,
+    pub notify_time: Option<String>,  // null=개별 알림 없음, "HH:MM"
+    pub remind_before: Option<i64>,   // null=리마인드 없음, 1~30 (기한 N일 전 예고)
 }
 
 /// 설정 키-값
@@ -66,6 +68,8 @@ pub struct TaskDto {
     pub recur_type: String,
     pub recur_param: Option<String>,
     pub sort_order: Option<i64>,
+    pub notify_time: Option<String>, // "HH:MM" 또는 null
+    pub remind_before: Option<i64>,  // 1~30 또는 null
 }
 
 // ── 조회 응답 (규칙에서 계산된 회차) ──────────────────────

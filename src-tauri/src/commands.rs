@@ -28,7 +28,7 @@ fn now_str() -> String {
 fn load_tasks(conn: &Connection) -> Result<Vec<Task>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id,name,memo,links,recur_type,recur_param,active,sort_order,created_at \
+            "SELECT id,name,memo,links,recur_type,recur_param,active,sort_order,created_at,notify_time,remind_before \
              FROM Task WHERE active=1 ORDER BY sort_order, id",
         )
         .map_err(e2s)?;
@@ -44,6 +44,8 @@ fn load_tasks(conn: &Connection) -> Result<Vec<Task>, String> {
                 active: r.get(6)?,
                 sort_order: r.get(7)?,
                 created_at: r.get(8)?,
+                notify_time: r.get(9)?,
+                remind_before: r.get(10)?,
             })
         })
         .map_err(e2s)?;
@@ -360,6 +362,78 @@ pub fn pending_summary(conn: &Connection) -> Result<PendingSummary, String> {
     })
 }
 
+// ── 업무별 알림 · 사전 리마인드 (스케줄러 전용) ──────────
+
+/// 한 업무의 알림 판정 스냅샷 (notify.rs 스케줄러가 시각 비교·발송에 사용).
+pub struct PerTaskNotify {
+    pub task_id: i64,
+    pub name: String,
+    /// notify_time 설정 + 오늘 기한 회차가 status=none 이면 Some("HH:MM").
+    /// (오늘 회차가 없거나 이미 완료/건너뜀이면 None)
+    pub today_notify_time: Option<String>,
+    /// remind_before=N 이고 다음 기한일(오늘+1~오늘+31 첫 항목)이 정확히 오늘+N 이면
+    /// Some((N, 기한일)). 그 외 None.
+    pub remind: Option<(i64, NaiveDate)>,
+}
+
+/// 업무별 개별 알림·사전 리마인드 후보 목록. 발송 대상이 하나라도 있는 업무만 반환.
+/// 시각(현재시각 ≥ 알림시각) 비교와 발송·중복방지는 스케줄러(notify.rs)가 담당한다.
+pub fn per_task_notify(conn: &Connection) -> Result<Vec<PerTaskNotify>, String> {
+    let today = Local::now().date_naive();
+    let tasks = load_tasks(conn)?;
+    let holidays = load_holidays(conn)?;
+    let checks = load_checks(conn)?;
+
+    let mut out = Vec::new();
+    for t in &tasks {
+        let param = t.recur_param.as_deref().unwrap_or("{}");
+
+        // 업무별 알림: notify_time 설정 + 오늘 기한 회차 존재 + 아직 미체크(none)
+        let today_notify_time = t.notify_time.as_ref().and_then(|nt| {
+            let occ = recur::occurrences_between(&t.recur_type, param, today, today, &holidays);
+            if occ.is_empty() {
+                return None;
+            }
+            if status_of(&checks, t.id, &today.to_string()) == "none" {
+                Some(nt.clone())
+            } else {
+                None
+            }
+        });
+
+        // 사전 리마인드: 다음 기한일(오늘+1~오늘+31 첫 항목)이 정확히 오늘+N
+        let remind = t.remind_before.and_then(|n| {
+            if !(1..=30).contains(&n) {
+                return None;
+            }
+            let fut = recur::occurrences_between(
+                &t.recur_type,
+                param,
+                today + Duration::days(1),
+                today + Duration::days(31),
+                &holidays,
+            );
+            fut.first().copied().and_then(|next| {
+                if (next - today).num_days() == n {
+                    Some((n, next))
+                } else {
+                    None
+                }
+            })
+        });
+
+        if today_notify_time.is_some() || remind.is_some() {
+            out.push(PerTaskNotify {
+                task_id: t.id,
+                name: t.name.clone(),
+                today_notify_time,
+                remind,
+            });
+        }
+    }
+    Ok(out)
+}
+
 /// Setting 단일 값 조회 (알림 스케줄러 등 내부용)
 pub(crate) fn read_setting(conn: &Connection, key: &str) -> Option<String> {
     conn.query_row(
@@ -537,8 +611,8 @@ pub fn add_task(app: tauri::AppHandle, state: State<AppState>, dto: TaskDto) -> 
     let id = {
         let conn = state.db.lock().map_err(e2s)?;
         conn.execute(
-            "INSERT INTO Task(name,memo,links,recur_type,recur_param,active,sort_order,created_at) \
-             VALUES(?1,?2,?3,?4,?5,1,?6,?7)",
+            "INSERT INTO Task(name,memo,links,recur_type,recur_param,active,sort_order,created_at,notify_time,remind_before) \
+             VALUES(?1,?2,?3,?4,?5,1,?6,?7,?8,?9)",
             params![
                 dto.name,
                 dto.memo,
@@ -546,7 +620,9 @@ pub fn add_task(app: tauri::AppHandle, state: State<AppState>, dto: TaskDto) -> 
                 dto.recur_type,
                 dto.recur_param,
                 dto.sort_order.unwrap_or(0),
-                now_str()
+                now_str(),
+                dto.notify_time,
+                dto.remind_before
             ],
         )
         .map_err(e2s)?;
@@ -562,8 +638,8 @@ pub fn update_task(app: tauri::AppHandle, state: State<AppState>, dto: TaskDto) 
     {
         let conn = state.db.lock().map_err(e2s)?;
         conn.execute(
-            "UPDATE Task SET name=?1,memo=?2,links=?3,recur_type=?4,recur_param=?5,sort_order=?6 \
-             WHERE id=?7",
+            "UPDATE Task SET name=?1,memo=?2,links=?3,recur_type=?4,recur_param=?5,sort_order=?6,\
+             notify_time=?7,remind_before=?8 WHERE id=?9",
             params![
                 dto.name,
                 dto.memo,
@@ -571,6 +647,8 @@ pub fn update_task(app: tauri::AppHandle, state: State<AppState>, dto: TaskDto) 
                 dto.recur_type,
                 dto.recur_param,
                 dto.sort_order.unwrap_or(0),
+                dto.notify_time,
+                dto.remind_before,
                 id
             ],
         )
@@ -791,6 +869,8 @@ mod tests {
             active: 1,
             sort_order: Some(0),
             created_at: Some("2020-01-01".to_string()),
+            notify_time: None,
+            remind_before: None,
         }
     }
 

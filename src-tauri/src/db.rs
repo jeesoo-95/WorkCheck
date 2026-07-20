@@ -21,8 +21,9 @@ pub fn open(db_path: &Path) -> Result<Connection, String> {
 /// - v1: 기본 테이블(Task/CheckLog/Setting/Holiday). 버전 도입 이전 스키마이며,
 ///   기존 DB 와 신규 DB 모두 user_version=0 으로 시작한다(v1 로 간주).
 /// - v2: CheckLog 에 status('done'|'skip') · memo 컬럼 추가 (소급 체크·스킵·완료 메모).
+/// - v3: Task 에 notify_time('HH:MM') · remind_before(1~30) 컬럼 추가 (업무별 알림·사전 리마인드).
 ///
-/// 기존 v1 DB(컬럼 없음)와 신규 DB 모두 아래 CREATE(v1 기준) → v2 ALTER 경로를 거친다.
+/// 기존 v1 DB(컬럼 없음)와 신규 DB 모두 아래 CREATE(v1 기준) → v2 → v3 ALTER 경로를 거친다.
 fn migrate(conn: &Connection) -> Result<(), String> {
     // v1 기본 테이블 (버전 무관 idempotent)
     conn.execute_batch(
@@ -68,6 +69,20 @@ fn migrate(conn: &Connection) -> Result<(), String> {
             ALTER TABLE CheckLog ADD COLUMN status TEXT NOT NULL DEFAULT 'done';
             ALTER TABLE CheckLog ADD COLUMN memo TEXT;
             PRAGMA user_version = 2;
+            "#,
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    // v3: Task.notify_time / Task.remind_before 추가.
+    //   notify_time  : null=개별 알림 없음, "HH:MM"=해당 시각 개별 알림
+    //   remind_before: null=리마인드 없음, 1~30=기한 N일 전 예고
+    if version < 3 {
+        conn.execute_batch(
+            r#"
+            ALTER TABLE Task ADD COLUMN notify_time TEXT;
+            ALTER TABLE Task ADD COLUMN remind_before INTEGER;
+            PRAGMA user_version = 3;
             "#,
         )
         .map_err(|e| e.to_string())?;
@@ -170,15 +185,37 @@ mod tests {
         (has_status, has_memo, ver)
     }
 
-    // 신규 DB: migrate 1회로 v2 컬럼 생성 + user_version=2
-    #[test]
-    fn migrate_fresh_db_to_v2() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn).unwrap();
-        assert_eq!(has_columns(&conn), (true, true, 2));
+    /// Task 에 notify_time/remind_before 컬럼이 있는지
+    fn has_task_columns(conn: &Connection) -> (bool, bool) {
+        let mut has_notify = false;
+        let mut has_remind = false;
+        let mut stmt = conn.prepare("PRAGMA table_info(Task)").unwrap();
+        let cols = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .map(|c| c.unwrap())
+            .collect::<Vec<_>>();
+        for c in &cols {
+            if c == "notify_time" {
+                has_notify = true;
+            }
+            if c == "remind_before" {
+                has_remind = true;
+            }
+        }
+        (has_notify, has_remind)
     }
 
-    // 기존 v1 DB(컬럼 없음, user_version=0): migrate 로 자동 업그레이드
+    // 신규 DB: migrate 1회로 v2/v3 컬럼 생성 + user_version=3
+    #[test]
+    fn migrate_fresh_db_to_v3() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        assert_eq!(has_columns(&conn), (true, true, 3));
+        assert_eq!(has_task_columns(&conn), (true, true));
+    }
+
+    // 기존 v1 DB(컬럼 없음, user_version=0): migrate 로 v3 까지 자동 업그레이드
     #[test]
     fn migrate_v1_db_upgrades() {
         let conn = Connection::open_in_memory().unwrap();
@@ -197,7 +234,8 @@ mod tests {
         )
         .unwrap();
         migrate(&conn).unwrap();
-        assert_eq!(has_columns(&conn), (true, true, 2));
+        assert_eq!(has_columns(&conn), (true, true, 3));
+        assert_eq!(has_task_columns(&conn), (true, true));
         // 기존 행은 DEFAULT 'done' 으로 채워짐
         let status: String = conn
             .query_row("SELECT status FROM CheckLog WHERE task_id=1", [], |r| r.get(0))
@@ -205,12 +243,43 @@ mod tests {
         assert_eq!(status, "done");
     }
 
-    // 재실행 idempotent: 이미 v2 인 DB 에 migrate 를 또 호출해도 안전
+    // 기존 v2 DB(status/memo 있음, notify 없음): migrate 로 v3 컬럼만 추가
     #[test]
-    fn migrate_idempotent_on_v2() {
+    fn migrate_v2_db_upgrades_to_v3() {
+        let conn = Connection::open_in_memory().unwrap();
+        // v1 CREATE → v2 ALTER 까지만 재현 (Task 는 notify 컬럼 없음)
+        conn.execute_batch(
+            r#"
+            CREATE TABLE Task (
+                id          INTEGER PRIMARY KEY,
+                name        TEXT NOT NULL,
+                recur_type  TEXT NOT NULL
+            );
+            CREATE TABLE CheckLog (
+                id          INTEGER PRIMARY KEY,
+                task_id     INTEGER NOT NULL,
+                due_date    TEXT NOT NULL,
+                checked_at  TEXT NOT NULL,
+                status      TEXT NOT NULL DEFAULT 'done',
+                memo        TEXT,
+                UNIQUE(task_id, due_date)
+            );
+            PRAGMA user_version = 2;
+            "#,
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        assert_eq!(has_columns(&conn), (true, true, 3));
+        assert_eq!(has_task_columns(&conn), (true, true));
+    }
+
+    // 재실행 idempotent: 이미 v3 인 DB 에 migrate 를 또 호출해도 안전
+    #[test]
+    fn migrate_idempotent_on_v3() {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
         migrate(&conn).unwrap(); // 두 번째 호출은 ALTER 건너뜀
-        assert_eq!(has_columns(&conn), (true, true, 2));
+        assert_eq!(has_columns(&conn), (true, true, 3));
+        assert_eq!(has_task_columns(&conn), (true, true));
     }
 }

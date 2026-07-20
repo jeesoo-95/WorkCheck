@@ -143,6 +143,8 @@ body{
 }
 .m-task .task-name{font-weight:500;}
 .m-task .rule{font-size:11.5px;color:var(--txt-sub);}
+.m-task .notify-note{font-size:11px;color:var(--blue);flex-shrink:0;}
+.m-task .badge.remind{background:var(--blue-soft);color:var(--blue);font-weight:600;}
 .m-task .actions{margin-left:auto;display:flex;gap:10px;font-size:12px;}
 .m-task .actions button{
   border:none;background:none;color:var(--txt-faint);cursor:pointer;font-family:inherit;font-size:12px;
@@ -275,6 +277,7 @@ body{
 .field input:focus,.field select:focus,.field textarea:focus{outline:2px solid var(--blue);outline-offset:-1px;border-color:var(--blue);}
 .field-row{display:flex;gap:10px;}
 .field-row .field{flex:1;}
+.modal-subhead{font-size:12px;font-weight:700;color:var(--txt-sub);margin:4px 0 8px;}
 .modal-foot{padding:12px 16px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px;}
 .btn-ghost{
   background:none;border:1px solid var(--line);border-radius:7px;padding:8px 14px;

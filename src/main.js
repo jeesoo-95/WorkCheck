@@ -329,6 +329,8 @@ function mTaskRow(t, done) {
   return `<div class="m-task${done ? ' done' : ''}" data-id="${t.id}">
            <div class="task-name">${esc(t.name)}</div>
            <span class="rule">${esc(ruleLabelJs(t))}</span>
+           ${t.notifyTime ? `<span class="notify-note">🔔 ${esc(t.notifyTime)}</span>` : ''}
+           ${t.remindBefore ? `<span class="badge remind">D-${t.remindBefore} 예고</span>` : ''}
            ${done ? '<span class="badge">완료</span>' : ''}
            <div class="actions">
              ${done ? '' : '<button class="edit">수정</button>'}
@@ -366,6 +368,8 @@ function showParamFields(type) {
   ['once', 'daily', 'weekly', 'monthly', 'quarterly', 'yearly'].forEach(k => {
     document.getElementById('p-' + k).style.display = (k === type) ? '' : 'none';
   });
+  // 매일 업무는 사전 예고가 무의미 → "N일 전 미리 알림" 입력 숨김
+  document.getElementById('f-remind-wrap').style.display = (type === 'daily') ? 'none' : '';
 }
 document.getElementById('f-recur-type').addEventListener('change', e => showParamFields(e.target.value));
 
@@ -390,6 +394,10 @@ function openModal(task) {
   document.getElementById('f-q-day').value = p.day ?? 1;
   document.getElementById('f-y-month').value = p.month ?? 1;
   document.getElementById('f-y-day').value = p.day ?? 1;
+
+  // 알림 설정 (선택)
+  document.getElementById('f-notify-time').value = task && task.notifyTime ? task.notifyTime : '';
+  document.getElementById('f-remind-before').value = task && task.remindBefore ? task.remindBefore : '';
 
   modalBack.classList.add('show');
   setTimeout(() => document.getElementById('f-name').focus(), 30);
@@ -425,6 +433,10 @@ document.getElementById('modal-save').addEventListener('click', async () => {
   if (!name) { alert('업무 이름을 입력하세요.'); document.getElementById('f-name').focus(); return; }
   const type = document.getElementById('f-recur-type').value;
   const idVal = document.getElementById('f-id').value;
+  // 알림 (선택): 빈 값 → null. 매일 업무는 사전 예고 무의미 → remindBefore 강제 null.
+  const notifyTime = document.getElementById('f-notify-time').value || null;
+  const remindRaw = document.getElementById('f-remind-before').value;
+  const remindBefore = (type === 'daily' || !remindRaw) ? null : Number(remindRaw);
   const dto = {
     id: idVal ? Number(idVal) : null,
     name,
@@ -433,6 +445,8 @@ document.getElementById('modal-save').addEventListener('click', async () => {
     recurType: type,
     recurParam: JSON.stringify(buildRecurParam(type)),
     sortOrder: 0,
+    notifyTime,
+    remindBefore,
   };
   try {
     if (dto.id) await invoke('update_task', { dto });

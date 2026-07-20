@@ -12,6 +12,28 @@ use std::sync::Mutex;
 use tauri::{Manager, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
 
+/// 무설치 실행 시 토스트 알림 신원(AppUserModelId) 등록.
+/// 설치본은 인스톨러가 등록하지만, exe 직접 실행은 이 등록이 없으면
+/// Windows가 알림 주체를 몰라 배너 표시가 누락될 수 있다.
+#[cfg(windows)]
+fn register_notification_identity(icon_dir: &std::path::Path) {
+    use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    if let Ok((key, _)) =
+        hkcu.create_subkey("Software\\Classes\\AppUserModelId\\com.jeesoo.workcheck")
+    {
+        let _ = key.set_value("DisplayName", &"업무 체크");
+        // 토스트에 표시할 아이콘: 내장 png 를 데이터 폴더에 풀어 참조
+        let icon_path = icon_dir.join("notify-icon.png");
+        if !icon_path.exists() {
+            let _ = std::fs::write(&icon_path, include_bytes!("../icons/128x128.png"));
+        }
+        if let Some(p) = icon_path.to_str() {
+            let _ = key.set_value("IconUri", &p);
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -22,6 +44,8 @@ pub fn run() {
             // DB 경로: app_data_dir(%APPDATA%\com.jeesoo.workcheck)\workcheck.db
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
+            #[cfg(windows)]
+            register_notification_identity(&dir);
             let db_path = dir.join("workcheck.db");
             let conn = db::open(&db_path).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             app.manage(AppState {
