@@ -1,0 +1,14 @@
+{
+  "name": "workcheck",
+  "version": "0.1.0",
+  "description": "업무 체크 — 개인 반복 업무 관리 툴 (Tauri v2 + 바닐라 HTML/CSS/JS)",
+  "private": true,
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

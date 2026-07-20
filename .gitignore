@@ -1,0 +1,16 @@
+# 의존성
+node_modules/
+
+# Rust / Tauri 빌드 산출물
+src-tauri/target/
+src-tauri/gen/
+
+# 로컬 DB (사용자 데이터)
+*.db
+*.db-journal
+
+# OS/에디터
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

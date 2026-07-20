@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>업무 체크</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- 에러 배너 -->
+<div class="err-banner" id="err-banner">
+  <span id="err-msg"></span>
+  <button id="err-retry">다시 시도</button>
+</div>
+
+<!-- 탭 -->
+<div class="tabs" role="tablist">
+  <button class="tab active" data-page="p-today" role="tab">오늘</button>
+  <button class="tab" data-page="p-manage" role="tab">전체 업무</button>
+  <button class="tab" data-page="p-stats" role="tab">통계</button>
+  <button class="tab" data-page="p-settings" role="tab">설정</button>
+</div>
+
+<!-- ═══════════ 오늘 탭 ═══════════ -->
+<div class="page active" id="p-today">
+  <div class="today-head">
+    <h1>오늘 할 일</h1>
+    <span class="date" id="today-date"></span>
+  </div>
+  <div class="summary" id="summary"></div>
+
+  <div class="sec" id="sec-overdue" style="display:none">
+    <div class="sec-title overdue">⚠ 밀린 업무</div>
+    <div id="list-overdue"></div>
+  </div>
+
+  <div class="sec">
+    <div class="sec-title">오늘</div>
+    <div id="list-today"></div>
+  </div>
+
+  <div class="sec" id="sec-upcoming" style="display:none">
+    <div class="sec-title">다가오는 업무</div>
+    <div id="list-upcoming"></div>
+  </div>
+
+  <div class="week-progress">
+    <div class="wp-head"><b>이번 주 수행률</b><span class="wp-pct" id="wp-pct">0%</span></div>
+    <div class="bar"><div id="wp-bar" style="width:0%"></div></div>
+  </div>
+</div>
+
+<!-- ═══════════ 전체 업무 탭 ═══════════ -->
+<div class="page" id="p-manage">
+  <div class="manage-head">
+    <h1>전체 업무</h1>
+    <button class="btn-add" id="btn-add-task">＋ 업무 추가</button>
+  </div>
+  <div id="manage-groups"></div>
+</div>
+
+<!-- ═══════════ 통계 탭 ═══════════ -->
+<div class="page" id="p-stats">
+  <div class="stats">
+    <h1>수행 통계</h1>
+    <div class="stat-cards">
+      <div class="stat-card"><div class="num" id="st-streak">0일</div><div class="lbl">연속 달성</div></div>
+      <div class="stat-card"><div class="num" id="st-month">0%</div><div class="lbl">이번 달 수행률</div></div>
+      <div class="stat-card"><div class="num warn" id="st-overdue">0건</div><div class="lbl">현재 밀림</div></div>
+    </div>
+    <div class="rate-row"><span class="rl">이번 주</span><div class="bar"><div id="st-week-bar" style="width:0%"></div></div><span class="rv" id="st-week-rv">0%</span></div>
+    <div class="rate-row"><span class="rl">이번 달</span><div class="bar"><div id="st-month-bar" style="width:0%"></div></div><span class="rv" id="st-month-rv">0%</span></div>
+    <div class="rate-row"><span class="rl">분기</span><div class="bar"><div id="st-quarter-bar" style="width:0%"></div></div><span class="rv" id="st-quarter-rv">0%</span></div>
+    <div class="heat-title">이번 달 일별 수행 현황 <span style="font-weight:400;color:var(--txt-faint)">(진할수록 완료 많음 · 빨강 = 미수행)</span></div>
+    <div class="heat" id="heat"></div>
+  </div>
+</div>
+
+<!-- ═══════════ 설정 탭 ═══════════ -->
+<div class="page" id="p-settings">
+  <div class="settings">
+    <h1>설정</h1>
+
+    <div class="set-group">
+      <h2>알림</h2>
+      <div class="set-row">
+        <div><div class="set-label">알림 사용</div><div class="set-sub">지정 시각에 미체크 업무 요약 알림</div></div>
+        <label class="switch"><input type="checkbox" id="set-notify-enabled"><span class="slider"></span></label>
+      </div>
+      <div class="set-row">
+        <div><div class="set-label">알림 시각</div></div>
+        <input type="time" id="set-notify-time" value="09:00">
+      </div>
+      <div class="set-row">
+        <div><div class="set-label">밀림 즉시 알림</div><div class="set-sub">밀림 발생 시 바로 알림</div></div>
+        <label class="switch"><input type="checkbox" id="set-notify-overdue"><span class="slider"></span></label>
+      </div>
+      <div class="set-row">
+        <div><div class="set-label">알림 테스트</div><div class="set-sub">샘플 토스트를 지금 보냅니다</div></div>
+        <div class="test-wrap">
+          <button class="btn-ghost" id="set-notify-test">알림 테스트</button>
+          <span class="test-ok" id="set-notify-test-ok">발송됨 ✓</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="set-group">
+      <h2>시작 옵션</h2>
+      <div class="set-row">
+        <div><div class="set-label">부팅 시 자동 시작</div><div class="set-sub">Windows 로그인 시 자동 실행</div></div>
+        <label class="switch"><input type="checkbox" id="set-autostart"><span class="slider"></span></label>
+      </div>
+      <div class="set-row">
+        <div><div class="set-label">닫기 버튼을 누르면 트레이로 최소화</div><div class="set-sub">끄면 X 클릭 시 완전 종료</div></div>
+        <label class="switch"><input type="checkbox" id="set-close-to-tray"><span class="slider"></span></label>
+      </div>
+    </div>
+
+    <div class="set-group">
+      <h2>공휴일 관리 <span style="font-weight:400;color:var(--txt-faint);font-size:11px">(평일만 주기에서 제외)</span></h2>
+      <div class="hol-list" id="hol-list"></div>
+      <div class="hol-add">
+        <input type="date" class="hd" id="hol-date">
+        <input type="text" class="hn" id="hol-name" placeholder="공휴일 이름">
+        <button class="btn-primary" id="hol-add-btn">추가</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ 업무 추가/수정 모달 ═══════════ -->
+<div class="modal-back" id="modal-back">
+  <div class="modal" role="dialog" aria-modal="true">
+    <div class="modal-head" id="modal-title">업무 추가</div>
+    <div class="modal-body">
+      <input type="hidden" id="f-id">
+      <div class="field">
+        <label for="f-name">이름</label>
+        <input type="text" id="f-name" placeholder="예: 주간보고 작성">
+      </div>
+      <div class="field">
+        <label for="f-recur-type">주기</label>
+        <select id="f-recur-type">
+          <option value="daily">매일</option>
+          <option value="weekly">매주</option>
+          <option value="monthly">매월</option>
+          <option value="quarterly">매분기</option>
+          <option value="yearly">연 1회</option>
+        </select>
+      </div>
+
+      <!-- 주기별 파라미터 -->
+      <div class="field" id="p-daily">
+        <label><input type="checkbox" id="f-weekdays-only" style="width:auto;margin-right:6px"> 평일만 (주말·공휴일 제외)</label>
+      </div>
+      <div class="field" id="p-weekly" style="display:none">
+        <label for="f-weekday">요일</label>
+        <select id="f-weekday">
+          <option value="0">일요일</option><option value="1">월요일</option>
+          <option value="2">화요일</option><option value="3">수요일</option>
+          <option value="4">목요일</option><option value="5">금요일</option>
+          <option value="6">토요일</option>
+        </select>
+      </div>
+      <div class="field" id="p-monthly" style="display:none">
+        <label for="f-month-day">며칠 (없는 날짜는 말일로 처리)</label>
+        <input type="number" id="f-month-day" min="1" max="31" value="1">
+      </div>
+      <div class="field-row" id="p-quarterly" style="display:none">
+        <div class="field">
+          <label for="f-moq">분기 내 달</label>
+          <select id="f-moq"><option value="1">첫째 달</option><option value="2">둘째 달</option><option value="3">셋째 달</option></select>
+        </div>
+        <div class="field">
+          <label for="f-q-day">며칠</label>
+          <input type="number" id="f-q-day" min="1" max="31" value="1">
+        </div>
+      </div>
+      <div class="field-row" id="p-yearly" style="display:none">
+        <div class="field">
+          <label for="f-y-month">월</label>
+          <input type="number" id="f-y-month" min="1" max="12" value="1">
+        </div>
+        <div class="field">
+          <label for="f-y-day">일</label>
+          <input type="number" id="f-y-day" min="1" max="31" value="1">
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="f-memo">메모</label>
+        <textarea id="f-memo" placeholder="선택 사항"></textarea>
+      </div>
+      <div class="field">
+        <label for="f-links">링크 (한 줄에 하나 — <code>제목|URL</code> 또는 URL)</label>
+        <textarea id="f-links" placeholder="Jira 필터|https://..."></textarea>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn-ghost" id="modal-cancel">취소</button>
+      <button class="btn-primary" id="modal-save">저장</button>
+    </div>
+  </div>
+</div>
+
+<script src="main.js"></script>
+</body>
+</html>
