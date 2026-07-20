@@ -216,18 +216,17 @@ async function loadManage() {
   const wrap = document.getElementById('manage-groups');
   wrap.innerHTML = GROUPS.map(g => {
     const items = tasks.filter(t => t.recurType === g.type);
+    // 1회성 그룹만: 완료(doneOnce) 업무는 기본 숨김
+    const hidden = g.type === 'once' ? items.filter(t => t.doneOnce) : [];
+    const visible = g.type === 'once' ? items.filter(t => !t.doneOnce) : items;
     let body;
     if (items.length) {
-      body = items.map(t =>
-        `<div class="m-task" data-id="${t.id}">
-           <div class="task-name">${esc(t.name)}</div>
-           <span class="rule">${esc(ruleLabelJs(t))}</span>
-           <div class="actions">
-             <button class="edit">수정</button>
-             <button class="del">삭제</button>
-           </div>
-         </div>`
-      ).join('');
+      body = visible.map(t => mTaskRow(t, false)).join('');
+      if (hidden.length) {
+        // 숨겨진 완료 1회성: 접힌 컨테이너 + 펼침 링크
+        body += `<div class="done-once-wrap" style="display:none">${hidden.map(t => mTaskRow(t, true)).join('')}</div>`;
+        body += `<a class="show-done" data-count="${hidden.length}">완료된 1회성 ${hidden.length}건 보기</a>`;
+      }
     } else {
       body = `<div class="empty">등록된 업무가 없습니다. <a class="add-here">＋ 업무 추가</a>로 등록하세요.</div>`;
     }
@@ -238,10 +237,34 @@ async function loadManage() {
   wrap.querySelectorAll('.m-task').forEach(row => {
     const id = Number(row.dataset.id);
     const task = tasks.find(t => t.id === id);
-    row.querySelector('.edit').addEventListener('click', () => openModal(task));
+    const editBtn = row.querySelector('.edit'); // 완료 1회성 행에는 없음
+    if (editBtn) editBtn.addEventListener('click', () => openModal(task));
     row.querySelector('.del').addEventListener('click', () => confirmDelete(task));
   });
+  // 완료 1회성 펼침/접힘 토글 (탭 재진입 시 loadManage 재실행으로 다시 접힘)
+  wrap.querySelectorAll('.show-done').forEach(link => {
+    const count = Number(link.dataset.count);
+    link.addEventListener('click', () => {
+      const w = link.previousElementSibling; // .done-once-wrap
+      const open = w.style.display === 'none';
+      w.style.display = open ? '' : 'none';
+      link.textContent = `완료된 1회성 ${count}건 ${open ? '숨기기' : '보기'}`;
+    });
+  });
   wrap.querySelectorAll('.add-here').forEach(a => a.addEventListener('click', () => openModal(null)));
+}
+
+// 전체 업무 탭의 업무 행 (done=true 는 완료된 1회성: 흐리게 + 완료 배지 + 수정 숨김)
+function mTaskRow(t, done) {
+  return `<div class="m-task${done ? ' done' : ''}" data-id="${t.id}">
+           <div class="task-name">${esc(t.name)}</div>
+           <span class="rule">${esc(ruleLabelJs(t))}</span>
+           ${done ? '<span class="badge">완료</span>' : ''}
+           <div class="actions">
+             ${done ? '' : '<button class="edit">수정</button>'}
+             <button class="del">삭제</button>
+           </div>
+         </div>`;
 }
 // 프론트 표시용 라벨 (백엔드 rule_label 과 동일 규칙)
 function ruleLabelJs(t) {

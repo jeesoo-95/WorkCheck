@@ -109,6 +109,20 @@ fn make_occ(
     }
 }
 
+/// 1회성(once) 완료 여부: recur_type=="once" 이고 지정 기한일(param.date)에
+/// 체크 이력이 있으면 true. 그 외 주기는 항상 false.
+fn is_done_once(t: &Task, checks: &HashSet<(i64, String)>) -> bool {
+    if t.recur_type != "once" {
+        return false;
+    }
+    t.recur_param
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .and_then(|v| v.get("date").and_then(|d| d.as_str()).map(String::from))
+        .map(|date| checks.contains(&(t.id, date)))
+        .unwrap_or(false)
+}
+
 /// 업무 생성일 (파싱 실패 시 None → 클램프 없음)
 fn created_date(t: &Task) -> Option<NaiveDate> {
     t.created_at
@@ -361,9 +375,18 @@ pub fn toggle_check(
 // ── 업무 CRUD ────────────────────────────────────────────
 
 #[tauri::command]
-pub fn list_tasks(state: State<AppState>) -> Result<Vec<Task>, String> {
+pub fn list_tasks(state: State<AppState>) -> Result<Vec<TaskListItem>, String> {
     let conn = state.db.lock().map_err(e2s)?;
-    load_tasks(&conn)
+    let tasks = load_tasks(&conn)?;
+    let checks = load_checks(&conn)?;
+    let items = tasks
+        .into_iter()
+        .map(|t| {
+            let done_once = is_done_once(&t, &checks);
+            TaskListItem { task: t, done_once }
+        })
+        .collect();
+    Ok(items)
 }
 
 #[tauri::command]

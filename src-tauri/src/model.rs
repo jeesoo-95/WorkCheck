@@ -34,6 +34,17 @@ pub struct Holiday {
     pub name: String,
 }
 
+/// list_tasks 응답 항목: Task 전체 필드 + doneOnce(1회성 완료 여부).
+/// DB 로딩용 Task 는 그대로 두고, flatten 으로 응답에만 doneOnce 를 덧붙인다.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskListItem {
+    #[serde(flatten)]
+    pub task: Task,
+    /// recur_type=="once" 이고 지정 기한일에 체크가 있으면 true. 그 외 주기는 항상 false.
+    pub done_once: bool,
+}
+
 // ── 입력 DTO ──────────────────────────────────────────────
 
 /// 업무 추가/수정 입력. id 가 있으면 수정에 사용.
