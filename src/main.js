@@ -27,6 +27,12 @@ function esc(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 function pct(r) { return Math.round((r || 0) * 100); }
+function todayIso() {
+  const d = new Date();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${m}-${day}`;
+}
 function parseLinks(raw) {
   if (!raw) return [];
   try { const a = JSON.parse(raw); return Array.isArray(a) ? a : []; } catch { return []; }
@@ -61,7 +67,8 @@ function taskRowHtml(occ, opts) {
   const links = parseLinks(occ.links);
   const hasDetail = !!(occ.memo || links.length);
   const badges = [];
-  badges.push(`<span class="badge">${esc(occ.ruleLabel)}</span>`);
+  // 예정 라벨이 있으면 규칙 배지와 내용이 겹치므로 예정 라벨만 표시
+  if (!occ.upcomingLabel) badges.push(`<span class="badge">${esc(occ.ruleLabel)}</span>`);
   if (occ.daysLate > 0) badges.push(`<span class="badge late">D+${occ.daysLate}</span>`);
   if (occ.upcomingLabel) badges.push(`<span class="badge">${esc(occ.upcomingLabel)}</span>`);
 
@@ -194,6 +201,7 @@ function switchTo(pageId) {
 
 // ── 전체 업무 탭 ──────────────────────────────────────────
 const GROUPS = [
+  { type: 'once', label: '1회성' },
   { type: 'daily', label: '매일' },
   { type: 'weekly', label: '매주' },
   { type: 'monthly', label: '매월' },
@@ -239,6 +247,10 @@ async function loadManage() {
 function ruleLabelJs(t) {
   const p = safeParam(t.recurParam);
   switch (t.recurType) {
+    case 'once': {
+      const dt = p.date ? new Date(p.date + 'T00:00:00') : null;
+      return dt ? `1회 · ${dt.getMonth() + 1}/${dt.getDate()}` : '1회';
+    }
     case 'daily': return p.weekdaysOnly ? '매일 · 평일만' : '매일';
     case 'weekly': return '매주 · ' + WEEKDAY_KO[p.weekday ?? 1];
     case 'monthly': return '매월 · ' + (p.day ?? 1) + '일';
@@ -258,7 +270,7 @@ async function confirmDelete(task) {
 // ── 모달 (추가/수정) ──────────────────────────────────────
 const modalBack = document.getElementById('modal-back');
 function showParamFields(type) {
-  ['daily', 'weekly', 'monthly', 'quarterly', 'yearly'].forEach(k => {
+  ['once', 'daily', 'weekly', 'monthly', 'quarterly', 'yearly'].forEach(k => {
     document.getElementById('p-' + k).style.display = (k === type) ? '' : 'none';
   });
 }
@@ -277,6 +289,7 @@ function openModal(task) {
   document.getElementById('f-recur-type').value = type;
   showParamFields(type);
   const p = task ? safeParam(task.recurParam) : {};
+  document.getElementById('f-once-date').value = p.date || todayIso();
   document.getElementById('f-weekdays-only').checked = !!p.weekdaysOnly;
   document.getElementById('f-weekday').value = String(p.weekday ?? 1);
   document.getElementById('f-month-day').value = p.day ?? 1;
@@ -295,6 +308,7 @@ modalBack.addEventListener('click', e => { if (e.target === modalBack) closeModa
 
 function buildRecurParam(type) {
   switch (type) {
+    case 'once': return { date: document.getElementById('f-once-date').value };
     case 'daily': return { weekdaysOnly: document.getElementById('f-weekdays-only').checked };
     case 'weekly': return { weekday: Number(document.getElementById('f-weekday').value) };
     case 'monthly': return { day: Number(document.getElementById('f-month-day').value) };

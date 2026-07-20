@@ -116,8 +116,13 @@ fn created_date(t: &Task) -> Option<NaiveDate> {
         .and_then(|s| NaiveDate::parse_from_str(s.get(..10)?, "%Y-%m-%d").ok())
 }
 
-/// 생성일 이전은 발생 회차로 치지 않도록 from 을 클램프
+/// 생성일 이전은 발생 회차로 치지 않도록 from 을 클램프.
+/// 단 1회성(once)은 사용자가 의도적으로 과거 기한을 지정할 수 있어(등록 즉시 밀림 D+n)
+/// 클램프 없이 from 을 그대로 쓴다.
 fn clamp_from(t: &Task, from: NaiveDate) -> NaiveDate {
+    if t.recur_type == "once" {
+        return from;
+    }
     match created_date(t) {
         Some(c) if c > from => c,
         _ => from,

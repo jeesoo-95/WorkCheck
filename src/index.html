@@ -143,6 +143,7 @@
       <div class="field">
         <label for="f-recur-type">주기</label>
         <select id="f-recur-type">
+          <option value="once">1회성 (지정일)</option>
           <option value="daily">매일</option>
           <option value="weekly">매주</option>
           <option value="monthly">매월</option>
@@ -152,6 +153,10 @@
       </div>
 
       <!-- 주기별 파라미터 -->
+      <div class="field" id="p-once" style="display:none">
+        <label for="f-once-date">기한일</label>
+        <input type="date" id="f-once-date">
+      </div>
       <div class="field" id="p-daily">
         <label><input type="checkbox" id="f-weekdays-only" style="width:auto;margin-right:6px"> 평일만 (주말·공휴일 제외)</label>
       </div>

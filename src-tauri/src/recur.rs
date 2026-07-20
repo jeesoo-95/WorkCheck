@@ -5,6 +5,7 @@
 //   monthly:   {"day": 1~31}           없는 날짜는 말일로 클램프
 //   quarterly: {"monthOfQuarter":1~3,"day":1~31} 분기(1~3/4~6/7~9/10~12)의 n번째 달
 //   yearly:    {"month":1~12,"day":n}
+//   once:      {"date":"YYYY-MM-DD"}   1회성 — 지정한 기한일 하루만
 
 use chrono::{Datelike, Duration, NaiveDate};
 use serde_json::Value;
@@ -111,6 +112,18 @@ pub fn occurrences_between(
                 }
             }
         }
+        "once" => {
+            // 지정한 기한일이 구간 안이면 그 하루만. 파싱 실패 시 빈 결과.
+            if let Some(date) = p
+                .get("date")
+                .and_then(|v| v.as_str())
+                .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+            {
+                if date >= from && date <= to {
+                    out.push(date);
+                }
+            }
+        }
         _ => {}
     }
 
@@ -148,6 +161,16 @@ pub fn rule_label(recur_type: &str, recur_param: &str) -> String {
             let d = p.get("day").and_then(|v| v.as_u64()).unwrap_or(1);
             format!("매년 · {}/{}", m, d)
         }
+        "once" => {
+            match p
+                .get("date")
+                .and_then(|v| v.as_str())
+                .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+            {
+                Some(date) => format!("1회 · {}/{}", date.month(), date.day()),
+                None => "1회".into(),
+            }
+        }
         _ => recur_type.to_string(),
     }
 }
@@ -159,6 +182,7 @@ pub fn short_recur(recur_type: &str) -> &'static str {
         "monthly" => "매월",
         "quarterly" => "분기",
         "yearly" => "연간",
+        "once" => "1회",
         _ => "예정",
     }
 }
@@ -235,5 +259,30 @@ mod tests {
         assert_eq!(rule_label("daily", r#"{"weekdaysOnly":true}"#), "매일 · 평일만");
         assert_eq!(rule_label("weekly", r#"{"weekday":5}"#), "매주 · 금");
         assert_eq!(rule_label("monthly", r#"{"day":1}"#), "매월 · 1일");
+    }
+
+    // 9. 1회성 — 기한일이 구간 안이면 그 하루만
+    #[test]
+    fn once_within_range() {
+        let occ = occurrences_between("once", r#"{"date":"2026-07-25"}"#, d(2026, 7, 1), d(2026, 7, 31), &empty());
+        assert_eq!(occ, vec![d(2026, 7, 25)]);
+    }
+
+    // 10. 1회성 — 기한일이 구간 밖이면 빈 결과
+    #[test]
+    fn once_outside_range() {
+        let occ = occurrences_between("once", r#"{"date":"2026-08-25"}"#, d(2026, 7, 1), d(2026, 7, 31), &empty());
+        assert!(occ.is_empty());
+    }
+
+    // 11. 1회성 — date 파싱 실패 시 빈 결과 + 라벨은 "1회"
+    #[test]
+    fn once_bad_param() {
+        let occ = occurrences_between("once", r#"{"date":"not-a-date"}"#, d(2026, 7, 1), d(2026, 7, 31), &empty());
+        assert!(occ.is_empty());
+        let occ2 = occurrences_between("once", r#"{}"#, d(2026, 7, 1), d(2026, 7, 31), &empty());
+        assert!(occ2.is_empty());
+        assert_eq!(rule_label("once", r#"{"date":"2026-07-25"}"#), "1회 · 7/25");
+        assert_eq!(rule_label("once", r#"{}"#), "1회");
     }
 }
