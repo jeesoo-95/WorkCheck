@@ -175,6 +175,11 @@ pub fn rule_label(recur_type: &str, recur_param: &str) -> String {
     }
 }
 
+/// 날짜의 한글 요일 1글자 (리포트 등 표시용). 위 WEEKDAY_KO 를 재사용한다.
+pub fn weekday_ko(date: NaiveDate) -> &'static str {
+    WEEKDAY_KO[date.weekday().num_days_from_sunday() as usize]
+}
+
 /// 다가오는 업무 배지용 짧은 라벨
 pub fn short_recur(recur_type: &str) -> &'static str {
     match recur_type {

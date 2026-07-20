@@ -64,7 +64,10 @@
 <!-- ═══════════ 통계 탭 ═══════════ -->
 <div class="page" id="p-stats">
   <div class="stats">
-    <h1>수행 통계</h1>
+    <div class="stats-head">
+      <h1>수행 통계</h1>
+      <button class="btn-add" id="btn-report">📋 리포트 생성</button>
+    </div>
     <div class="stat-cards">
       <div class="stat-card"><div class="num" id="st-streak">0일</div><div class="lbl">연속 달성</div></div>
       <div class="stat-card"><div class="num" id="st-month">0%</div><div class="lbl">이번 달 수행률</div></div>
@@ -128,6 +131,27 @@
         <div><div class="set-label">닫기 버튼을 누르면 트레이로 최소화</div><div class="set-sub">끄면 X 클릭 시 완전 종료</div></div>
         <label class="switch"><input type="checkbox" id="set-close-to-tray"><span class="slider"></span></label>
       </div>
+    </div>
+
+    <div class="set-group">
+      <h2>데이터</h2>
+      <div class="set-row">
+        <div><div class="set-label">자동 백업</div><div class="set-sub">앱 시작 시 자동으로 1회 백업 (최근 7개 보관)</div></div>
+        <label class="switch"><input type="checkbox" id="set-auto-backup"><span class="slider"></span></label>
+      </div>
+      <div class="set-row">
+        <div><div class="set-label">지금 백업</div><div class="set-sub">현재 데이터를 백업 폴더에 저장합니다</div></div>
+        <div class="test-wrap">
+          <button class="btn-ghost" id="set-backup-now">지금 백업</button>
+        </div>
+      </div>
+      <div class="set-row">
+        <div><div class="set-label">백업에서 복원</div><div class="set-sub">.db 백업 파일을 골라 현재 데이터를 교체합니다</div></div>
+        <div class="test-wrap">
+          <button class="btn-ghost" id="set-restore">백업에서 복원</button>
+        </div>
+      </div>
+      <div class="backup-msg" id="backup-msg"></div>
     </div>
 
     <div class="set-group">
@@ -242,6 +266,33 @@
     <div class="modal-body" id="day-modal-body"></div>
     <div class="modal-foot">
       <button class="btn-ghost" id="day-modal-close">닫기</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ 리포트 생성 모달 ═══════════ -->
+<div class="modal-back" id="report-modal-back">
+  <div class="modal" role="dialog" aria-modal="true">
+    <div class="modal-head">리포트 생성</div>
+    <div class="modal-body">
+      <div class="field">
+        <label for="report-preset">기간</label>
+        <select id="report-preset">
+          <option value="thisWeek">이번 주</option>
+          <option value="lastWeek">지난 주</option>
+          <option value="thisMonth">이번 달</option>
+          <option value="lastMonth">지난 달</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="report-preview">미리보기</label>
+        <textarea id="report-preview" class="report-preview" readonly></textarea>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn-ghost" id="report-close">닫기</button>
+      <button class="btn-primary" id="report-copy">클립보드 복사</button>
+      <span class="test-ok" id="report-copy-ok">복사됨 ✓</span>
     </div>
   </div>
 </div>

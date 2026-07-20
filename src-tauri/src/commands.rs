@@ -6,8 +6,9 @@ use crate::recur;
 use chrono::{Datelike, Duration, Local, NaiveDate};
 use rusqlite::{params, Connection};
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{Manager, State};
 
 /// 앱 전역 상태 (DB 연결)
 pub struct AppState {
@@ -757,6 +758,101 @@ pub fn get_stats(state: State<AppState>) -> Result<Stats, String> {
     })
 }
 
+// ── 리포트 생성 (통계 탭) ────────────────────────────────
+
+/// 리포트 한 항목(회차): 날짜·업무명·상태·완료메모.
+struct ReportItem {
+    date: NaiveDate,
+    name: String,
+    status: String, // "done" | "skip" | "none"
+    memo: Option<String>,
+}
+
+/// [from,to] 구간 회차를 모아 Markdown 리포트 문자열을 만든다(순수 함수).
+/// - to 는 오늘로 클램프해 미래 회차를 제외한다.
+/// - 판정은 status_of 규칙으로 단일화(get_stats·오늘 탭과 동일). skip 은 대상(분모)에서 제외.
+/// - 항목은 날짜순. 완료 항목만 완료 메모를 덧붙인다.
+fn build_report(
+    tasks: &[Task],
+    holidays: &HashSet<NaiveDate>,
+    checks: &HashMap<(i64, String), CheckInfo>,
+    from: NaiveDate,
+    to_req: NaiveDate,
+    today: NaiveDate,
+) -> String {
+    let to = to_req.min(today); // 미래 회차 제외
+
+    let mut items: Vec<ReportItem> = Vec::new();
+    for t in tasks {
+        let param = t.recur_param.as_deref().unwrap_or("{}");
+        for d in recur::occurrences_between(&t.recur_type, param, clamp_from(t, from), to, holidays) {
+            let due = d.to_string();
+            let info = checks.get(&(t.id, due));
+            let status = info.map(|c| c.status.clone()).unwrap_or_else(|| "none".to_string());
+            let memo = info.and_then(|c| c.memo.clone());
+            items.push(ReportItem { date: d, name: t.name.clone(), status, memo });
+        }
+    }
+    // 항목은 날짜순 (같은 날짜는 업무 등록순 유지 → stable sort)
+    items.sort_by(|a, b| a.date.cmp(&b.date));
+
+    // 집계 (skip 은 대상에서 제외 — range_counts 와 동일 정의)
+    let done = items.iter().filter(|i| i.status == "done").count();
+    let skipped = items.iter().filter(|i| i.status == "skip").count();
+    let none = items.iter().filter(|i| i.status == "none").count();
+    let target = done + none; // 대상 = 완료 + 미수행
+    let pct = if target == 0 { 0 } else { (done * 100 + target / 2) / target }; // 반올림
+
+    let mut out = String::new();
+    out.push_str(&format!("# 업무 수행 리포트 ({} ~ {})\n\n", from, to));
+    out.push_str(&format!(
+        "수행률 {}% (완료 {} / 대상 {} · 건너뜀 {} · 미수행 {})\n",
+        pct, done, target, skipped, none
+    ));
+
+    // 섹션: 완료 / 건너뜀 / 미수행 (항목 있는 섹션만 출력)
+    let mut section = |title: &str, status: &str, with_memo: bool| {
+        let rows: Vec<&ReportItem> = items.iter().filter(|i| i.status == status).collect();
+        if rows.is_empty() {
+            return;
+        }
+        out.push_str(&format!("\n## {}\n", title));
+        for it in rows {
+            out.push_str(&format!(
+                "- {:02}/{:02}({}) {}",
+                it.date.month(),
+                it.date.day(),
+                recur::weekday_ko(it.date),
+                it.name
+            ));
+            if with_memo {
+                if let Some(m) = it.memo.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+                    out.push_str(&format!(" — {}", m));
+                }
+            }
+            out.push('\n');
+        }
+    };
+    section("완료", "done", true);
+    section("건너뜀", "skip", false);
+    section("미수행", "none", false);
+
+    out
+}
+
+/// 지정 기간의 Markdown 리포트 생성. from/to 는 "YYYY-MM-DD".
+#[tauri::command]
+pub fn generate_report(state: State<AppState>, from: String, to: String) -> Result<String, String> {
+    let conn = state.db.lock().map_err(e2s)?;
+    let today = Local::now().date_naive();
+    let from_d = NaiveDate::parse_from_str(&from, "%Y-%m-%d").map_err(e2s)?;
+    let to_d = NaiveDate::parse_from_str(&to, "%Y-%m-%d").map_err(e2s)?;
+    let tasks = load_tasks(&conn)?;
+    let holidays = load_holidays(&conn)?;
+    let checks = load_checks(&conn)?;
+    Ok(build_report(&tasks, &holidays, &checks, from_d, to_d, today))
+}
+
 // ── 설정 ─────────────────────────────────────────────────
 
 #[tauri::command]
@@ -878,6 +974,109 @@ pub fn set_autostart(app: tauri::AppHandle, enable: bool) -> Result<(), String> 
     }
 }
 
+// ── M3: 백업 · 복원 (설정 탭) ─────────────────────────────
+// 플러그인은 JS 직접 호출 대신 Rust 커맨드로 래핑(dialog 는 blocking API 로 Rust 에서만 사용).
+
+/// 백업 폴더 = app_data_dir/backups (없으면 생성)
+fn backups_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(e2s)?.join("backups");
+    std::fs::create_dir_all(&dir).map_err(e2s)?;
+    Ok(dir)
+}
+
+/// 열린 연결을 backups_dir 에 workcheck_YYYYMMDD_HHMMSS.db 로 안전 복사(rusqlite backup API).
+/// 완료 후 오래된 백업 정리(최근 7개만 보관). 반환값 = 생성된 파일 경로.
+/// setup(자동 백업)과 backup_now 커맨드가 공용으로 사용한다.
+pub(crate) fn perform_backup(conn: &Connection, dir: &Path) -> Result<String, String> {
+    std::fs::create_dir_all(dir).map_err(e2s)?;
+    let fname = format!("workcheck_{}.db", Local::now().format("%Y%m%d_%H%M%S"));
+    let dest = dir.join(&fname);
+    conn.backup(rusqlite::DatabaseName::Main, &dest, None)
+        .map_err(e2s)?;
+    prune_backups(dir, 7);
+    Ok(dest.to_string_lossy().into_owned())
+}
+
+/// 정기 백업 파일(workcheck_YYYYMMDD_HHMMSS.db)만 대상으로 최근 keep 개만 남기고 삭제.
+/// 복원 전 안전본(workcheck_before_restore.db)은 정리 대상에서 제외한다.
+fn prune_backups(dir: &Path, keep: usize) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<PathBuf> = rd
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| {
+                    n.starts_with("workcheck_")
+                        && n.ends_with(".db")
+                        && n != "workcheck_before_restore.db"
+                })
+                .unwrap_or(false)
+        })
+        .collect();
+    files.sort(); // 파일명에 타임스탬프 → 이름 오름차순 = 오래된 순
+    if files.len() > keep {
+        for old in &files[..files.len() - keep] {
+            let _ = std::fs::remove_file(old);
+        }
+    }
+}
+
+/// 파일이 SQLite DB 인지 헤더("SQLite format 3\0")로 검증
+fn is_sqlite_file(path: &Path) -> bool {
+    use std::io::Read;
+    let mut header = [0u8; 16];
+    std::fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut header))
+        .map(|_| &header == b"SQLite format 3\x00")
+        .unwrap_or(false)
+}
+
+/// 지금 즉시 백업. 성공 시 생성된 백업 파일 경로를 반환.
+#[tauri::command]
+pub fn backup_now(app: tauri::AppHandle, state: State<AppState>) -> Result<String, String> {
+    let dir = backups_dir(&app)?;
+    let conn = state.db.lock().map_err(e2s)?;
+    perform_backup(&conn, &dir)
+}
+
+/// 백업 파일을 골라 현재 DB 에 복원.
+/// dialog 로 .db 파일 선택(취소 시 Err "취소됨") → SQLite 헤더 검증 →
+/// 현재 DB 를 workcheck_before_restore.db 로 백업 → 선택 파일을 열린 연결에 역방향 복원.
+/// 성공 시 복원 원본 파일 경로 반환. (연결 교체 없이 내용만 교체 → 프론트 리로드로 즉시 반영)
+#[tauri::command]
+pub fn restore_backup(app: tauri::AppHandle, state: State<AppState>) -> Result<String, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter("SQLite DB", &["db"])
+        .blocking_pick_file()
+        .ok_or_else(|| "취소됨".to_string())?;
+    let src = picked.into_path().map_err(e2s)?;
+    if !is_sqlite_file(&src) {
+        return Err("올바른 SQLite 백업 파일이 아닙니다".to_string());
+    }
+    let dir = backups_dir(&app)?;
+    let mut conn = state.db.lock().map_err(e2s)?;
+    // 복원 전 현재 DB 안전본 확보
+    let before = dir.join("workcheck_before_restore.db");
+    conn.backup(rusqlite::DatabaseName::Main, &before, None)
+        .map_err(e2s)?;
+    // 선택 파일 → 열린 연결로 역방향 복원 (내용만 교체)
+    conn.restore(
+        rusqlite::DatabaseName::Main,
+        &src,
+        None::<fn(rusqlite::backup::Progress)>,
+    )
+    .map_err(e2s)?;
+    drop(conn); // 락 해제 후 툴팁 갱신 (재잠금 데드락 방지 — 기존 패턴)
+    crate::tray::update_tooltip(&app);
+    Ok(src.to_string_lossy().into_owned())
+}
+
 // ── 단위 테스트 ──────────────────────────────────────────
 // range_stats / range_counts 는 Connection 없이 동작하는 순수 함수라 여기서 검증한다.
 #[cfg(test)]
@@ -959,5 +1158,46 @@ mod tests {
         let (done, total, skipped) =
             range_counts(&tasks, &holidays, &checks, d(2026, 7, 20), d(2026, 7, 20));
         assert_eq!((done, total, skipped), (0, 0, 1));
+    }
+
+    // 4) 리포트: 헤더 수행률·집계 + 완료 메모 + 미래 회차(오늘 이후) 제외.
+    #[test]
+    fn build_report_header_and_sections() {
+        let mut t = daily_task(1);
+        t.name = "일일점검".to_string();
+        let tasks = vec![t];
+        let holidays: HashSet<NaiveDate> = HashSet::new();
+        let mut checks: HashMap<(i64, String), CheckInfo> = HashMap::new();
+        // 20 done(메모), 21 skip, 22 none. 오늘=22 → 23(요청 to) 는 미래라 제외.
+        checks.insert(
+            (1, "2026-07-20".to_string()),
+            CheckInfo { status: "done".to_string(), memo: Some("완료함".to_string()) },
+        );
+        checks.insert((1, "2026-07-21".to_string()), ci("skip"));
+
+        let out = build_report(&tasks, &holidays, &checks, d(2026, 7, 20), d(2026, 7, 23), d(2026, 7, 22));
+        // 대상=2(20 done, 22 none), 완료 1 → 수행률 50%
+        assert!(out.contains("# 업무 수행 리포트 (2026-07-20 ~ 2026-07-22)"));
+        assert!(out.contains("수행률 50% (완료 1 / 대상 2 · 건너뜀 1 · 미수행 1)"));
+        assert!(out.contains("## 완료\n- 07/20(월) 일일점검 — 완료함"));
+        assert!(out.contains("## 건너뜀\n- 07/21(화) 일일점검"));
+        assert!(out.contains("## 미수행\n- 07/22(수) 일일점검"));
+        // 미래(07/23) 회차는 포함되지 않음
+        assert!(!out.contains("07/23"));
+    }
+
+    // 5) 리포트: 대상 0(전부 skip)이면 수행률 0%, 빈 섹션은 생략.
+    #[test]
+    fn build_report_all_skip_zero_rate() {
+        let tasks = vec![daily_task(1)];
+        let holidays: HashSet<NaiveDate> = HashSet::new();
+        let mut checks: HashMap<(i64, String), CheckInfo> = HashMap::new();
+        checks.insert((1, "2026-07-20".to_string()), ci("skip"));
+
+        let out = build_report(&tasks, &holidays, &checks, d(2026, 7, 20), d(2026, 7, 20), d(2026, 7, 20));
+        assert!(out.contains("수행률 0% (완료 0 / 대상 0 · 건너뜀 1 · 미수행 0)"));
+        assert!(out.contains("## 건너뜀"));
+        assert!(!out.contains("## 완료"));
+        assert!(!out.contains("## 미수행"));
     }
 }

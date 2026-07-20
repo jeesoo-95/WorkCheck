@@ -50,6 +50,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // DB 경로: app_data_dir(%APPDATA%\com.jeesoo.workcheck)\workcheck.db
             let dir = app.path().app_data_dir()?;
@@ -88,6 +89,20 @@ pub fn run() {
                 });
             }
 
+            // 자동 백업: auto_backup=1 이면 앱 시작 시 1회 (실패해도 앱 시작은 계속)
+            {
+                let state = app.state::<AppState>();
+                let guard = state.db.lock();
+                if let Ok(conn) = guard {
+                    let enabled = commands::read_setting(&conn, "auto_backup")
+                        .map(|v| v == "1")
+                        .unwrap_or(true);
+                    if enabled {
+                        let _ = commands::perform_backup(&conn, &dir.join("backups"));
+                    }
+                }
+            }
+
             // 알림 스케줄러 시작 (시작 시 밀림 알림 + 툴팁 초기화 포함)
             notify::start(app.handle().clone());
 
@@ -104,6 +119,7 @@ pub fn run() {
             commands::update_task,
             commands::delete_task,
             commands::get_stats,
+            commands::generate_report,
             commands::set_sort_order,
             commands::open_link,
             commands::get_settings,
@@ -114,6 +130,8 @@ pub fn run() {
             commands::test_notification,
             commands::get_autostart,
             commands::set_autostart,
+            commands::backup_now,
+            commands::restore_backup,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

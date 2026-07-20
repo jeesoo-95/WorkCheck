@@ -198,7 +198,22 @@ body{
 .empty a{color:var(--blue);cursor:pointer;text-decoration:underline;}
 
 /* ── 통계 탭 ─────────────────────────── */
+.stats-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;}
+.stats-head h1{margin-bottom:0;}
 .stats h1{font-size:20px;font-weight:800;margin-bottom:14px;}
+/* 리포트 미리보기 (모달) */
+.report-preview{
+  width:100%;min-height:300px;max-height:52vh;resize:vertical;overflow:auto;
+  white-space:pre;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
+  font-size:12px;line-height:1.5;border:1px solid var(--line);border-radius:7px;
+  padding:10px;color:var(--txt);background:var(--subtle-bg);
+}
+/* 백업 결과/안내 메시지 */
+.backup-msg{
+  display:none;margin-top:10px;font-size:11.5px;line-height:1.5;word-break:break-all;
+  background:var(--blue-soft);color:var(--blue);border-radius:6px;padding:8px 10px;
+}
+.backup-msg.show{display:block;}
 .stat-cards{display:flex;gap:8px;margin-bottom:16px;}
 .stat-card{
   flex:1;background:var(--card);border:1px solid var(--line);border-radius:8px;

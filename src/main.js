@@ -52,12 +52,12 @@ function esc(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 function pct(r) { return Math.round((r || 0) * 100); }
-function todayIso() {
-  const d = new Date();
+function fmtIso(d) {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${d.getFullYear()}-${m}-${day}`;
 }
+function todayIso() { return fmtIso(new Date()); }
 function parseLinks(raw) {
   if (!raw) return [];
   try { const a = JSON.parse(raw); return Array.isArray(a) ? a : []; } catch { return []; }
@@ -582,6 +582,55 @@ function setRate(prefix, r) {
   document.getElementById(prefix + '-rv').textContent = p + '%';
 }
 
+// ── 리포트 생성 모달 ──────────────────────────────────────
+// 프리셋 → [from, to] (YYYY-MM-DD). 미래는 백엔드가 오늘로 클램프한다.
+function reportRange(preset) {
+  const now = new Date(); now.setHours(0, 0, 0, 0);
+  const dow = (now.getDay() + 6) % 7; // 월=0 기준 (백엔드 week_start 와 동일)
+  const monday = new Date(now); monday.setDate(now.getDate() - dow);
+  let from, to;
+  switch (preset) {
+    case 'lastWeek': {
+      from = new Date(monday); from.setDate(monday.getDate() - 7);
+      to = new Date(from); to.setDate(from.getDate() + 6);
+      break;
+    }
+    case 'thisMonth':
+      from = new Date(now.getFullYear(), now.getMonth(), 1); to = now; break;
+    case 'lastMonth':
+      from = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      to = new Date(now.getFullYear(), now.getMonth(), 0); break; // 지난달 말일
+    case 'thisWeek':
+    default:
+      from = monday; to = now; break;
+  }
+  return { from: fmtIso(from), to: fmtIso(to) };
+}
+const reportModalBack = document.getElementById('report-modal-back');
+function closeReportModal() { reportModalBack.classList.remove('show'); }
+async function refreshReport() {
+  const preset = document.getElementById('report-preset').value;
+  const { from, to } = reportRange(preset);
+  const ta = document.getElementById('report-preview');
+  try {
+    ta.value = await invoke('generate_report', { from, to });
+    clearError();
+  } catch (e) { showError(e.message || e, null); }
+}
+document.getElementById('btn-report').addEventListener('click', () => {
+  reportModalBack.classList.add('show');
+  refreshReport();
+});
+document.getElementById('report-preset').addEventListener('change', refreshReport);
+document.getElementById('report-close').addEventListener('click', closeReportModal);
+reportModalBack.addEventListener('click', e => { if (e.target === reportModalBack) closeReportModal(); });
+document.getElementById('report-copy').addEventListener('click', async () => {
+  const ok = await copyToClipboard(document.getElementById('report-preview').value);
+  const fb = document.getElementById('report-copy-ok');
+  if (ok) { fb.classList.add('show'); setTimeout(() => fb.classList.remove('show'), 1500); }
+  else showError('클립보드 복사에 실패했습니다', null);
+});
+
 // ── 소급 체크(회차) 모달 ──────────────────────────────────
 const dayModalBack = document.getElementById('day-modal-back');
 function closeDayModal() { dayModalBack.classList.remove('show'); }
@@ -649,6 +698,7 @@ async function loadSettings() {
   document.getElementById('set-notify-time').value = map.notify_time || '09:00';
   document.getElementById('set-notify-overdue').checked = map.notify_on_overdue === '1';
   document.getElementById('set-close-to-tray').checked = map.close_to_tray !== '0'; // 기본 1
+  document.getElementById('set-auto-backup').checked = map.auto_backup !== '0';     // 기본 1
 
   // 자동 시작 상태는 플러그인에서 조회 (Setting 아님)
   try { document.getElementById('set-autostart').checked = await invoke('get_autostart'); }
@@ -684,6 +734,34 @@ document.getElementById('set-notify-enabled').addEventListener('change', e => sa
 document.getElementById('set-notify-overdue').addEventListener('change', e => saveSetting('notify_on_overdue', e.target.checked ? '1' : '0'));
 document.getElementById('set-notify-time').addEventListener('change', e => saveSetting('notify_time', e.target.value));
 document.getElementById('set-close-to-tray').addEventListener('change', e => saveSetting('close_to_tray', e.target.checked ? '1' : '0'));
+document.getElementById('set-auto-backup').addEventListener('change', e => saveSetting('auto_backup', e.target.checked ? '1' : '0'));
+
+// 지금 백업 → 저장 경로 표시
+document.getElementById('set-backup-now').addEventListener('click', async () => {
+  const msg = document.getElementById('backup-msg');
+  try {
+    const path = await invoke('backup_now');
+    clearError();
+    msg.textContent = '✓ 백업 완료: ' + path;
+    msg.classList.add('show');
+  } catch (e) { showError(e.message || e, null); }
+});
+
+// 백업에서 복원 → 파일 선택 dialog → 복원 → 즉시 리로드
+document.getElementById('set-restore').addEventListener('click', async () => {
+  const msg = document.getElementById('backup-msg');
+  try {
+    const path = await invoke('restore_backup');
+    clearError();
+    msg.textContent = '✓ 복원 완료 (' + path + '). 앱을 다시 시작하면 완전히 적용됩니다.';
+    msg.classList.add('show');
+    loadToday();     // 오늘 탭 즉시 반영
+    loadSettings();  // 설정·공휴일도 복원본 기준으로 갱신
+  } catch (e) {
+    if ((e.message || e) === '취소됨') return; // 사용자가 취소 → 조용히 무시
+    showError(e.message || e, null);
+  }
+});
 
 // 자동 시작 토글 (플러그인 커맨드 경유). 실패 시 토글 원복.
 document.getElementById('set-autostart').addEventListener('change', async e => {
