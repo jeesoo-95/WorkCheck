@@ -358,7 +358,7 @@ async function loadManage() {
     if (!items.length) {
       // 빈 그룹: 큰 카드 대신 한 줄로 압축(접기 대상 아님). 우측에 '+ 추가' 링크.
       return `<div class="group-label empty-line">${g.label} (0) <span class="none-note">— 없음</span>` +
-             `<a class="add-here" role="button" tabindex="0">＋ 추가</a></div>`;
+             `<a class="add-here" role="button" tabindex="0" data-group-type="${g.type}">＋ 추가</a></div>`;
     }
     const collapsed = collapsedGroups.has(g.type);
     // 1회성 그룹만: 완료(doneOnce) 업무는 기본 숨김
@@ -403,9 +403,10 @@ async function loadManage() {
     });
   });
   wrap.querySelectorAll('.add-here').forEach(a => {
-    a.addEventListener('click', () => openModal(null));
+    const preset = a.dataset.groupType || null; // 빈 그룹의 '+추가'는 그 주기를 프리셋으로
+    a.addEventListener('click', () => openModal(null, preset));
     a.addEventListener('keydown', e => {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openModal(null); }
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openModal(null, preset); }
     });
   });
 
@@ -511,7 +512,7 @@ function showParamFields(type) {
 }
 document.getElementById('f-recur-type').addEventListener('change', e => showParamFields(e.target.value));
 
-function openModal(task) {
+function openModal(task, presetType) {
   document.getElementById('modal-title').textContent = task ? '업무 수정' : '업무 추가';
   document.getElementById('f-id').value = task ? task.id : '';
   document.getElementById('f-name').value = task ? task.name : '';
@@ -520,7 +521,8 @@ function openModal(task) {
   const links = task ? parseLinks(task.links) : [];
   document.getElementById('f-links').value = links.map(l => (l.title ? l.title + '|' : '') + (l.url || '')).join('\n');
 
-  const type = task ? task.recurType : 'daily';
+  // 신규 추가 시 presetType(빈 그룹 '+추가'가 넘긴 주기)이 있으면 그 주기로 시작
+  const type = task ? task.recurType : (presetType || 'daily');
   document.getElementById('f-recur-type').value = type;
   showParamFields(type);
   const p = task ? safeParam(task.recurParam) : {};
