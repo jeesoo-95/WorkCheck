@@ -317,29 +317,64 @@ const GROUPS = [
   { type: 'quarterly', label: '매분기' },
   { type: 'yearly', label: '연 1회' },
 ];
+// 접힌(collapsed) 그룹 type 집합. Setting 키 'collapsed_groups' 에 JSON 배열로 저장/복원.
+let collapsedGroups = new Set();
+// get_settings 결과에서 접힌 그룹 목록을 읽는다. 값 없음/파싱 실패 시 빈 배열(모두 펼침).
+function readCollapsedGroups(settings) {
+  const raw = (settings.find(s => s.key === 'collapsed_groups') || {}).value;
+  if (!raw) return [];
+  try { const a = JSON.parse(raw); return Array.isArray(a) ? a : []; } catch { return []; }
+}
+// 접힘 상태 저장 — 사소한 UI 상태이므로 실패해도 조용히 무시(에러 배너 없음).
+function persistCollapsed() {
+  invoke('set_setting', { key: 'collapsed_groups', value: JSON.stringify([...collapsedGroups]) })
+    .catch(() => {});
+}
+// 그룹 헤더 접기/펼치기 토글. 헤더 다음 형제(.group-body) 표시를 전환하고 상태를 저장.
+function toggleGroup(header) {
+  const type = header.dataset.groupType;
+  const body = header.nextElementSibling; // .group-body
+  const nowCollapsed = !header.classList.contains('collapsed');
+  header.classList.toggle('collapsed', nowCollapsed);
+  header.setAttribute('aria-expanded', nowCollapsed ? 'false' : 'true');
+  if (body) body.style.display = nowCollapsed ? 'none' : '';
+  if (nowCollapsed) collapsedGroups.add(type); else collapsedGroups.delete(type);
+  persistCollapsed();
+}
 async function loadManage() {
   let tasks;
   try { tasks = await invoke('list_tasks'); clearError(); }
   catch (e) { showError(e.message || e, loadManage); return; }
 
+  // 접힌 그룹 상태 로드 (UI 상태 → 실패해도 조용히 무시: 모두 펼침으로 진행)
+  try {
+    const settings = await invoke('get_settings');
+    collapsedGroups = new Set(readCollapsedGroups(settings));
+  } catch { /* 무시 */ }
+
   const wrap = document.getElementById('manage-groups');
   wrap.innerHTML = GROUPS.map(g => {
     const items = tasks.filter(t => t.recurType === g.type);
+    if (!items.length) {
+      // 빈 그룹: 큰 카드 대신 한 줄로 압축(접기 대상 아님). 우측에 '+ 추가' 링크.
+      return `<div class="group-label empty-line">${g.label} (0) <span class="none-note">— 없음</span>` +
+             `<a class="add-here" role="button" tabindex="0">＋ 추가</a></div>`;
+    }
+    const collapsed = collapsedGroups.has(g.type);
     // 1회성 그룹만: 완료(doneOnce) 업무는 기본 숨김
     const hidden = g.type === 'once' ? items.filter(t => t.doneOnce) : [];
     const visible = g.type === 'once' ? items.filter(t => !t.doneOnce) : items;
-    let body;
-    if (items.length) {
-      body = visible.map(t => mTaskRow(t, false)).join('');
-      if (hidden.length) {
-        // 숨겨진 완료 1회성: 접힌 컨테이너 + 펼침 링크
-        body += `<div class="done-once-wrap" style="display:none">${hidden.map(t => mTaskRow(t, true)).join('')}</div>`;
-        body += `<a class="show-done" data-count="${hidden.length}">완료된 1회성 ${hidden.length}건 보기</a>`;
-      }
-    } else {
-      body = `<div class="empty">등록된 업무가 없습니다. <a class="add-here">＋ 업무 추가</a>로 등록하세요.</div>`;
+    let body = visible.map(t => mTaskRow(t, false)).join('');
+    if (hidden.length) {
+      // 숨겨진 완료 1회성: 접힌 컨테이너 + 펼침 링크
+      body += `<div class="done-once-wrap" style="display:none">${hidden.map(t => mTaskRow(t, true)).join('')}</div>`;
+      body += `<a class="show-done" data-count="${hidden.length}">완료된 1회성 ${hidden.length}건 보기</a>`;
     }
-    return `<div class="group-label">${g.label} (${items.length})</div>${body}`;
+    // 접기 가능한 헤더(캐럿 + 라벨) + 접힘 시 숨기는 .group-body 컨테이너
+    return `<div class="group-label collapsible${collapsed ? ' collapsed' : ''}" data-group-type="${g.type}"` +
+           ` role="button" tabindex="0" aria-expanded="${collapsed ? 'false' : 'true'}">` +
+           `<span class="caret" aria-hidden="true">▾</span>${g.label} (${items.length})</div>` +
+           `<div class="group-body"${collapsed ? ' style="display:none"' : ''}>${body}</div>`;
   }).join('');
 
   // 이벤트 바인딩
@@ -349,6 +384,13 @@ async function loadManage() {
     const editBtn = row.querySelector('.edit'); // 완료 1회성 행에는 없음
     if (editBtn) editBtn.addEventListener('click', () => openModal(task));
     row.querySelector('.del').addEventListener('click', () => confirmDelete(task));
+  });
+  // 그룹 접기/펼치기 (비어있지 않은 그룹만 .collapsible). 클릭 + Enter/Space 지원.
+  wrap.querySelectorAll('.group-label.collapsible').forEach(h => {
+    h.addEventListener('click', () => toggleGroup(h));
+    h.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleGroup(h); }
+    });
   });
   // 완료 1회성 펼침/접힘 토글 (탭 재진입 시 loadManage 재실행으로 다시 접힘)
   wrap.querySelectorAll('.show-done').forEach(link => {
@@ -360,9 +402,14 @@ async function loadManage() {
       link.textContent = `완료된 1회성 ${count}건 ${open ? '숨기기' : '보기'}`;
     });
   });
-  wrap.querySelectorAll('.add-here').forEach(a => a.addEventListener('click', () => openModal(null)));
+  wrap.querySelectorAll('.add-here').forEach(a => {
+    a.addEventListener('click', () => openModal(null));
+    a.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openModal(null); }
+    });
+  });
 
-  // 드래그 순서 정렬 바인딩 (같은 주기 그룹 안에서만)
+  // 드래그 순서 정렬 바인딩 (같은 주기 그룹 안에서만) — .group-body 내부 행에도 그대로 적용
   wireDrag(wrap);
 }
 

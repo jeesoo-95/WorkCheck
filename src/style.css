@@ -171,6 +171,26 @@ body{
 .btn-add:hover{background:var(--blue-hover);}
 .btn-add:focus-visible{outline:2px solid var(--blue);outline-offset:2px;}
 .group-label{font-size:11px;font-weight:700;color:var(--txt-faint);letter-spacing:.06em;margin:14px 0 6px;}
+/* 접기 가능한 그룹 헤더: 캐럿 + 라벨, 클릭/키보드로 접기·펼치기 */
+.group-label.collapsible{
+  display:flex;align-items:center;gap:5px;cursor:pointer;user-select:none;
+  width:fit-content;padding:2px 4px;margin-left:-4px;border-radius:5px;
+}
+.group-label.collapsible:hover{color:var(--txt-sub);}
+.group-label.collapsible:focus-visible{outline:2px solid var(--blue);outline-offset:2px;}
+.group-label .caret{
+  display:inline-block;font-size:9px;color:var(--txt-faint);transition:transform .15s ease;
+}
+.group-label.collapsed .caret{transform:rotate(-90deg);} /* ▾ → ▸ (접힘) */
+/* 빈 그룹 압축 한 줄: '— 없음' 보조 텍스트 + '＋ 추가' 링크 */
+.group-label.empty-line{display:flex;align-items:center;gap:6px;width:fit-content;margin:10px 0 4px;}
+.group-label .none-note{font-weight:400;letter-spacing:normal;color:var(--txt-faint);}
+.group-label.empty-line .add-here{
+  font-weight:400;font-size:11px;letter-spacing:normal;margin-left:4px;
+  color:var(--blue);cursor:pointer;text-decoration:none;
+}
+.group-label.empty-line .add-here:hover{text-decoration:underline;}
+.group-label.empty-line .add-here:focus-visible{outline:2px solid var(--blue);outline-offset:2px;border-radius:3px;}
 .m-task{
   background:var(--card);border:1px solid var(--line);border-radius:8px;
   padding:10px 12px;margin-bottom:6px;display:flex;align-items:center;gap:10px;
