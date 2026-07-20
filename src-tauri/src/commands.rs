@@ -29,8 +29,8 @@ fn now_str() -> String {
 fn load_tasks(conn: &Connection) -> Result<Vec<Task>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id,name,memo,links,recur_type,recur_param,active,sort_order,created_at,notify_time,remind_before \
-             FROM Task WHERE active=1 ORDER BY sort_order, id",
+            "SELECT id,name,memo,links,recur_type,recur_param,active,sort_order,created_at,notify_time,remind_before,priority \
+             FROM Task WHERE active=1 ORDER BY priority, sort_order, id",
         )
         .map_err(e2s)?;
     let rows = stmt
@@ -47,6 +47,7 @@ fn load_tasks(conn: &Connection) -> Result<Vec<Task>, String> {
                 created_at: r.get(8)?,
                 notify_time: r.get(9)?,
                 remind_before: r.get(10)?,
+                priority: r.get(11)?,
             })
         })
         .map_err(e2s)?;
@@ -131,6 +132,7 @@ fn make_occ(
         check_memo,
         days_late,
         upcoming_label,
+        priority: t.priority,
     }
 }
 
@@ -612,8 +614,8 @@ pub fn add_task(app: tauri::AppHandle, state: State<AppState>, dto: TaskDto) -> 
     let id = {
         let conn = state.db.lock().map_err(e2s)?;
         conn.execute(
-            "INSERT INTO Task(name,memo,links,recur_type,recur_param,active,sort_order,created_at,notify_time,remind_before) \
-             VALUES(?1,?2,?3,?4,?5,1,?6,?7,?8,?9)",
+            "INSERT INTO Task(name,memo,links,recur_type,recur_param,active,sort_order,created_at,notify_time,remind_before,priority) \
+             VALUES(?1,?2,?3,?4,?5,1,?6,?7,?8,?9,?10)",
             params![
                 dto.name,
                 dto.memo,
@@ -623,7 +625,8 @@ pub fn add_task(app: tauri::AppHandle, state: State<AppState>, dto: TaskDto) -> 
                 dto.sort_order.unwrap_or(0),
                 now_str(),
                 dto.notify_time,
-                dto.remind_before
+                dto.remind_before,
+                dto.priority.unwrap_or(1)
             ],
         )
         .map_err(e2s)?;
@@ -640,7 +643,7 @@ pub fn update_task(app: tauri::AppHandle, state: State<AppState>, dto: TaskDto) 
         let conn = state.db.lock().map_err(e2s)?;
         conn.execute(
             "UPDATE Task SET name=?1,memo=?2,links=?3,recur_type=?4,recur_param=?5,sort_order=?6,\
-             notify_time=?7,remind_before=?8 WHERE id=?9",
+             notify_time=?7,remind_before=?8,priority=?9 WHERE id=?10",
             params![
                 dto.name,
                 dto.memo,
@@ -650,6 +653,7 @@ pub fn update_task(app: tauri::AppHandle, state: State<AppState>, dto: TaskDto) 
                 dto.sort_order.unwrap_or(0),
                 dto.notify_time,
                 dto.remind_before,
+                dto.priority.unwrap_or(1),
                 id
             ],
         )
@@ -1101,6 +1105,7 @@ mod tests {
             created_at: Some("2020-01-01".to_string()),
             notify_time: None,
             remind_before: None,
+            priority: 1,
         }
     }
 

@@ -195,16 +195,26 @@
         <label for="f-name">이름</label>
         <input type="text" id="f-name" placeholder="예: 주간보고 작성">
       </div>
-      <div class="field">
-        <label for="f-recur-type">주기</label>
-        <select id="f-recur-type">
-          <option value="once">1회성 (지정일)</option>
-          <option value="daily">매일</option>
-          <option value="weekly">매주</option>
-          <option value="monthly">매월</option>
-          <option value="quarterly">매분기</option>
-          <option value="yearly">연 1회</option>
-        </select>
+      <div class="field-row">
+        <div class="field">
+          <label for="f-recur-type">주기</label>
+          <select id="f-recur-type">
+            <option value="once">1회성 (지정일)</option>
+            <option value="daily">매일</option>
+            <option value="weekly">매주</option>
+            <option value="monthly">매월</option>
+            <option value="quarterly">매분기</option>
+            <option value="yearly">연 1회</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="f-priority">우선순위</label>
+          <select id="f-priority">
+            <option value="0">높음</option>
+            <option value="1">보통</option>
+            <option value="2">낮음</option>
+          </select>
+        </div>
       </div>
 
       <!-- 주기별 파라미터 -->

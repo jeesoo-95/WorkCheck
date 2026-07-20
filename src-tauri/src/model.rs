@@ -20,6 +20,7 @@ pub struct Task {
     pub created_at: Option<String>,
     pub notify_time: Option<String>,  // null=개별 알림 없음, "HH:MM"
     pub remind_before: Option<i64>,   // null=리마인드 없음, 1~30 (기한 N일 전 예고)
+    pub priority: i64,                // 0=높음, 1=보통(기본), 2=낮음 (숫자 작을수록 우선)
 }
 
 /// 설정 키-값
@@ -70,6 +71,7 @@ pub struct TaskDto {
     pub sort_order: Option<i64>,
     pub notify_time: Option<String>, // "HH:MM" 또는 null
     pub remind_before: Option<i64>,  // 1~30 또는 null
+    pub priority: Option<i64>,       // 0=높음|1=보통|2=낮음. 없으면 add_task 에서 1(보통)
 }
 
 // ── 조회 응답 (규칙에서 계산된 회차) ──────────────────────
@@ -91,6 +93,7 @@ pub struct TaskOccurrence {
     pub check_memo: Option<String>,     // 완료 메모(회차별, Task.memo 와 별개)
     pub days_late: i64,                 // 밀림 D+n (오늘/다가오는건 0)
     pub upcoming_label: Option<String>, // "분기 · 7/31 예정" 등
+    pub priority: i64,                  // 0=높음|1=보통|2=낮음 (오늘 탭 우선순위 배지용)
 }
 
 /// 오늘 탭 응답

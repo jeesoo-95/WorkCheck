@@ -114,6 +114,9 @@ body{
 .badge.late{background:var(--red-soft);color:var(--red);font-weight:700;}
 .badge.skip{background:var(--skip-bg);color:var(--txt-sub);font-weight:600;}
 .badge.done{background:var(--blue-soft);color:var(--blue);font-weight:600;}
+/* 우선순위 배지 — 높음=빨강 테두리형(밀림 D+n 의 채움형과 톤 구분), 낮음=옅은 회색 */
+.badge.prio-high{background:transparent;color:var(--red);border:1px solid var(--red);font-weight:700;}
+.badge.prio-low{background:var(--chip);color:var(--txt-faint);font-weight:500;}
 .clip{color:var(--txt-faint);font-size:12px;flex-shrink:0;}
 /* 건너뜀 회차: 체크박스는 점선·흐리게(비활성 느낌) — 클릭하면 완료 전환은 허용 */
 .task.skip .chk{border-style:dashed;opacity:.55;}

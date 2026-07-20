@@ -86,12 +86,22 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   if (fn) fn();
 }));
 
+// 우선순위 배지 HTML. 높음(0)=빨강 계열 테두리형, 낮음(2)=회색, 보통(1)=배지 없음.
+function priorityBadgeHtml(priority) {
+  if (priority === 0) return '<span class="badge prio-high">높음</span>';
+  if (priority === 2) return '<span class="badge prio-low">낮음</span>';
+  return '';
+}
+
 // ── 업무 행 렌더 (오늘 탭) ──────────────────────────────
 function taskRowHtml(occ, opts) {
   opts = opts || {};
   const links = parseLinks(occ.links);
   const hasDetail = !!(occ.memo || links.length);
   const badges = [];
+  // 우선순위(높음/낮음) 배지를 먼저 표시 — 밀림 D+n·건너뜀 배지와 공존
+  const prio = priorityBadgeHtml(occ.priority);
+  if (prio) badges.push(prio);
   // 건너뜀 상태는 이름 옆 회색 배지로 먼저 표시
   if (occ.status === 'skip') badges.push('<span class="badge skip">건너뜀</span>');
   // 예정 라벨이 있으면 규칙 배지와 내용이 겹치므로 예정 라벨만 표시
@@ -371,8 +381,11 @@ function wireDrag(wrap) {
       dragEl = null;
     });
     row.addEventListener('dragover', e => {
-      // 같은 그룹의 다른 행 위에서만 삽입 위치 미리보기(실제 DOM 이동)
-      if (!dragEl || dragEl === row || dragEl.dataset.group !== row.dataset.group) return;
+      // 같은 주기 그룹 + 같은 우선순위의 다른 행 위에서만 삽입 위치 미리보기.
+      // 다른 우선순위 행 위로는 드롭을 막는다(preventDefault 생략 → 드롭 불가).
+      if (!dragEl || dragEl === row) return;
+      if (dragEl.dataset.group !== row.dataset.group) return;
+      if (dragEl.dataset.priority !== row.dataset.priority) return;
       e.preventDefault();
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
       const rect = row.getBoundingClientRect();
@@ -380,15 +393,19 @@ function wireDrag(wrap) {
       row.parentNode.insertBefore(dragEl, before ? row : row.nextSibling);
     });
     row.addEventListener('drop', async e => {
-      if (!dragEl || dragEl.dataset.group !== row.dataset.group) return;
+      if (!dragEl) return;
+      if (dragEl.dataset.group !== row.dataset.group) return;
+      if (dragEl.dataset.priority !== row.dataset.priority) return;
       e.preventDefault();
-      await persistOrder(wrap, row.dataset.group);
+      await persistOrder(wrap, row.dataset.group, row.dataset.priority);
     });
   });
 }
-// 해당 그룹의 현재 DOM 순서를 읽어 sort_order 로 저장. 실패 시 재로딩으로 원복.
-async function persistOrder(wrap, group) {
-  const ids = [...wrap.querySelectorAll(`.m-task[data-group="${group}"]`)].map(el => Number(el.dataset.id));
+// 해당 그룹+우선순위의 현재 DOM 순서를 읽어 sort_order 로 저장. 실패 시 재로딩으로 원복.
+// (같은 priority 형제들의 새 순서만 저장 — 다른 우선순위 항목은 건드리지 않음)
+async function persistOrder(wrap, group, priority) {
+  const ids = [...wrap.querySelectorAll(`.m-task[data-group="${group}"][data-priority="${priority}"]`)]
+    .map(el => Number(el.dataset.id));
   try { await invoke('set_sort_order', { ids }); clearError(); }
   catch (e) { showError(e.message || e, null); loadManage(); }
 }
@@ -396,9 +413,12 @@ async function persistOrder(wrap, group) {
 // 전체 업무 탭의 업무 행 (done=true 는 완료된 1회성: 흐리게 + 완료 배지 + 수정 숨김)
 // 완료 1회성(done)은 드래그 대상 제외 — draggable·data-group 미부여.
 function mTaskRow(t, done) {
-  const drag = done ? '' : ` draggable="true" data-group="${esc(t.recurType)}"`;
+  const prio = (t.priority != null ? t.priority : 1);
+  // 드래그 정렬은 "같은 주기 그룹 + 같은 우선순위"끼리만 → data-priority 로 구분
+  const drag = done ? '' : ` draggable="true" data-group="${esc(t.recurType)}" data-priority="${prio}"`;
   return `<div class="m-task${done ? ' done' : ''}" data-id="${t.id}"${drag}>
            <div class="task-name">${esc(t.name)}</div>
+           ${priorityBadgeHtml(prio)}
            <span class="rule">${esc(ruleLabelJs(t))}</span>
            ${t.notifyTime ? `<span class="notify-note">🔔 ${esc(t.notifyTime)}</span>` : ''}
            ${t.remindBefore ? `<span class="badge remind">D-${t.remindBefore} 예고</span>` : ''}
@@ -466,6 +486,9 @@ function openModal(task) {
   document.getElementById('f-y-month').value = p.month ?? 1;
   document.getElementById('f-y-day').value = p.day ?? 1;
 
+  // 우선순위 (없으면 보통=1)
+  document.getElementById('f-priority').value = String(task && task.priority != null ? task.priority : 1);
+
   // 알림 설정 (선택)
   document.getElementById('f-notify-time').value = task && task.notifyTime ? task.notifyTime : '';
   document.getElementById('f-remind-before').value = task && task.remindBefore ? task.remindBefore : '';
@@ -518,6 +541,7 @@ document.getElementById('modal-save').addEventListener('click', async () => {
     sortOrder: 0,
     notifyTime,
     remindBefore,
+    priority: Number(document.getElementById('f-priority').value),
   };
   try {
     if (dto.id) await invoke('update_task', { dto });
