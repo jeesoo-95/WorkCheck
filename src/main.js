@@ -908,6 +908,14 @@ function wireTaskAddedEvent() {
   }
 }
 
+// 자정 롤오버·재활성 시 날짜 자동 동기화.
+// 앱을 자정 넘겨 계속 켜두면 오늘 탭이 어제 날짜에 고정되던 문제 방지.
+let lastKnownDate = todayIso();
+function syncDateIfChanged() {
+  const now = todayIso();
+  if (now !== lastKnownDate) { lastKnownDate = now; reloadActiveTab(); }
+}
+
 // ── 시작 ──────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
   if (!hasTauri()) {
@@ -916,4 +924,10 @@ window.addEventListener('DOMContentLoaded', () => {
   loadTheme(); // 저장된 테마 로드→적용 (실패 시 시스템 따름)
   loadToday();
   wireTaskAddedEvent(); // 빠른 추가 등록 시 현재 탭 자동 갱신
+
+  // 날짜 자동 동기화: 1분마다 확인(자정 후 최대 1분 내 갱신) + 창 재활성 시 즉시
+  lastKnownDate = todayIso();
+  setInterval(syncDateIfChanged, 60000);
+  window.addEventListener('focus', syncDateIfChanged);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) syncDateIfChanged(); });
 });
