@@ -127,3 +127,39 @@ pub struct Stats {
     pub quarter_rate: f64,
     pub heatmap: Vec<HeatCell>,
 }
+
+// ── M4: Jira 알림 ─────────────────────────────────────────
+
+/// 연결 테스트 응답 (jira_test_connection). /rest/api/3/myself 에서 파싱.
+/// 프론트가 성공 시 account_id 를 jira_account_id Setting 에 저장한다.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JiraUser {
+    pub account_id: String,
+    pub display_name: String,
+}
+
+/// 폴링 결과 (jira_poll_now). new_count=신규 삽입 알림 수, error=실패 사유(성공 시 None).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PollResult {
+    pub new_count: i64,
+    pub error: Option<String>,
+}
+
+/// Jira 알림 피드 한 행 (get_jira_notifications). JiraNotification 테이블과 1:1.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JiraNotificationRow {
+    pub id: i64,
+    pub event_uid: String,
+    pub issue_key: String,
+    pub project_key: String,
+    pub category: String, // created|status|assignee|field|comment|mention
+    pub summary: String,
+    pub detail: String,
+    pub actor: String,
+    pub event_at: String,
+    pub fetched_at: String,
+    pub read: i64,
+}

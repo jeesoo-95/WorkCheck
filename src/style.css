@@ -337,6 +337,103 @@ body{
 .hol-add input.hd{width:130px;}
 .hol-add input.hn{flex:1;min-width:100px;}
 
+/* ── Jira 알림 탭 ─────────────────────────── */
+/* 탭 버튼 안읽음 배지 */
+.tab-badge{
+  display:inline-block;margin-left:3px;min-width:16px;height:16px;line-height:16px;
+  padding:0 5px;border-radius:9px;background:var(--red);color:#fff;
+  font-size:10.5px;font-weight:700;text-align:center;vertical-align:middle;
+}
+.jira-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;}
+.jira-head h1{font-size:20px;font-weight:800;}
+.jira-actions{display:flex;gap:8px;}
+.jira-actions .btn-ghost{padding:6px 12px;font-size:12.5px;}
+.jira-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;flex-wrap:wrap;}
+.jira-filters{display:flex;gap:6px;flex-wrap:wrap;}
+.jchip{
+  border:1px solid var(--line);background:var(--card);color:var(--txt-sub);
+  border-radius:20px;padding:4px 11px;font-size:12px;cursor:pointer;font-family:inherit;
+}
+.jchip:hover{border-color:var(--line-strong);color:var(--txt);}
+.jchip.active{background:var(--blue);color:#fff;border-color:var(--blue);font-weight:600;}
+.jira-unread-toggle{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--txt-sub);cursor:pointer;white-space:nowrap;}
+.jira-unread-toggle input{width:auto;}
+.jira-status{font-size:11.5px;color:var(--txt-faint);margin-bottom:10px;min-height:14px;}
+.jira-status .jira-err{color:var(--red);font-weight:600;}
+/* 알림 행 */
+.jira-item{
+  display:flex;gap:10px;background:var(--card);border:1px solid var(--line);
+  border-radius:8px;padding:10px 12px;margin-bottom:6px;cursor:pointer;transition:border-color .12s;
+}
+.jira-item:hover{border-color:var(--line-strong);}
+.jira-item:focus-visible{outline:2px solid var(--blue);outline-offset:-2px;}
+/* 안읽음: 좌측 블루 바 + 볼드 */
+.jira-item.unread{border-left:3px solid var(--blue);}
+.jira-item.unread .jsummary,.jira-item.unread .jkey{font-weight:700;}
+.jbadge{
+  flex-shrink:0;align-self:flex-start;font-size:10.5px;font-weight:700;
+  padding:2px 7px;border-radius:5px;background:var(--chip);color:var(--txt-sub);
+}
+/* 카테고리별 뱃지 색 (CSS 변수만 사용, 다크 자동 대응) */
+.jbadge.jcat-created{background:var(--blue-soft);color:var(--blue);}
+.jbadge.jcat-status{background:var(--blue-soft);color:var(--blue);}
+.jbadge.jcat-assignee{background:var(--chip);color:var(--txt-sub);}
+.jbadge.jcat-field{background:var(--chip);color:var(--txt-sub);}
+.jbadge.jcat-comment{background:var(--skip-bg);color:var(--txt-sub);}
+.jbadge.jcat-mention{background:var(--red-soft);color:var(--red);}
+.jbadge.jcat-assigned{background:var(--chip);color:var(--green);}
+.jira-item-body{flex:1;min-width:0;}
+.jira-item-top{display:flex;gap:6px;align-items:baseline;flex-wrap:wrap;}
+.jira-item-top .jkey{font-size:12px;color:var(--blue);font-weight:600;flex-shrink:0;}
+.jira-item-top .jsummary{font-size:13px;color:var(--txt);}
+.jira-item-detail{font-size:12px;color:var(--txt-sub);margin-top:3px;line-height:1.5;word-break:break-word;}
+.jira-item-meta{font-size:11px;color:var(--txt-faint);margin-top:4px;}
+/* 설정 탭 Jira 입력 */
+.jira-input{
+  border:1px solid var(--line);border-radius:6px;padding:5px 8px;font-family:inherit;font-size:13px;
+  background:var(--card);color:var(--txt);width:220px;max-width:52vw;
+}
+.jira-input:focus{outline:none;border-color:var(--blue);}
+.jira-input.jira-input-sm{width:90px;}
+.jira-link{color:var(--blue);cursor:pointer;text-decoration:none;}
+.jira-link:hover{text-decoration:underline;}
+.jira-test-msg{font-size:12px;font-weight:700;}
+.jira-test-msg.ok{color:var(--green);}
+.jira-test-msg.err{color:var(--red);}
+/* 알림 받을 분류 체크박스 그룹 */
+.jira-cats{display:flex;flex-wrap:wrap;gap:6px 12px;max-width:60vw;justify-content:flex-end;}
+.jira-cats label{display:flex;align-items:center;gap:4px;font-size:12px;color:var(--txt-sub);cursor:pointer;white-space:nowrap;}
+.jira-cats input{width:auto;}
+/* 설정 항목 도움말 툴팁 (🔍 오버/포커스 시 표시) — CSS-only */
+/* ⓘ 아이콘 — 동그라미 안에 i (이모지 대신 CSS 렌더, 테마 색 자동) */
+.info-tip{
+  position:relative;display:inline-flex;align-items:center;justify-content:center;
+  width:14px;height:14px;margin-left:5px;vertical-align:-1px;cursor:help;
+  border:1px solid var(--txt-faint);border-radius:50%;
+  color:var(--txt-faint);font-size:10px;font-weight:700;line-height:1;font-family:Georgia,serif;
+}
+.info-tip::before{content:"i";}
+.info-tip:hover{border-color:var(--txt-sub);color:var(--txt-sub);}
+.info-tip:focus-visible{outline:2px solid var(--blue);outline-offset:2px;}
+.info-pop{
+  /* 위쪽으로 펼침 — 두 아이콘 모두 설정 페이지 하단부라 아래로 열면 창 밖으로 잘림 */
+  display:none;position:absolute;bottom:calc(100% + 6px);left:0;z-index:50;
+  background:var(--card);border:1px solid var(--line-strong);border-radius:8px;
+  box-shadow:0 6px 20px rgba(0,0,0,.18);padding:10px 12px;
+  width:max-content;max-width:min(340px,78vw);
+  font-size:11.5px;font-weight:400;color:var(--txt);line-height:1.5;
+  font-family:Pretendard,'Malgun Gothic',sans-serif; /* 아이콘(serif) 글꼴 상속 차단 */
+  white-space:normal;cursor:default;text-align:left;
+}
+.info-tip:hover .info-pop,.info-tip:focus-within .info-pop{display:block;}
+/* 표 형태 툴팁 */
+.info-pop table{border-collapse:collapse;width:100%;}
+.info-pop th,.info-pop td{padding:3px 6px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line);}
+.info-pop th{font-size:11px;font-weight:700;color:var(--txt-sub);}
+.info-pop td{font-size:11px;color:var(--txt-sub);}
+.info-pop tr:last-child td{border-bottom:none;}
+.info-pop .info-note{margin-top:7px;font-size:10.5px;color:var(--txt-faint);line-height:1.45;}
+
 /* ── 모달 (업무 추가/수정) ─────────────────────────── */
 .modal-back{
   display:none;position:fixed;inset:0;background:var(--overlay);

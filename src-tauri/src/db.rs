@@ -23,8 +23,9 @@ pub fn open(db_path: &Path) -> Result<Connection, String> {
 /// - v2: CheckLog 에 status('done'|'skip') · memo 컬럼 추가 (소급 체크·스킵·완료 메모).
 /// - v3: Task 에 notify_time('HH:MM') · remind_before(1~30) 컬럼 추가 (업무별 알림·사전 리마인드).
 /// - v4: Task 에 priority(0=높음·1=보통·2=낮음) 컬럼 추가 (업무별 우선순위·우선순위 순 정렬).
+/// - v5: JiraNotification 테이블 + 인덱스 추가 (M4 Jira 알림 피드·dedup).
 ///
-/// 기존 v1 DB(컬럼 없음)와 신규 DB 모두 아래 CREATE(v1 기준) → v2 → v3 → v4 ALTER 경로를 거친다.
+/// 기존 v1 DB(컬럼 없음)와 신규 DB 모두 아래 CREATE(v1 기준) → v2 → v3 → v4 → v5 경로를 거친다.
 fn migrate(conn: &Connection) -> Result<(), String> {
     // v1 기본 테이블 (버전 무관 idempotent)
     conn.execute_batch(
@@ -101,6 +102,31 @@ fn migrate(conn: &Connection) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     }
 
+    // v5: JiraNotification 테이블 + 인덱스 (M4 Jira 알림).
+    //   event_uid UNIQUE 로 INSERT OR IGNORE dedup, idx 는 안읽음·최신순 조회용.
+    if version < 5 {
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS JiraNotification (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_uid   TEXT NOT NULL UNIQUE,
+                issue_key   TEXT NOT NULL,
+                project_key TEXT NOT NULL,
+                category    TEXT NOT NULL,
+                summary     TEXT NOT NULL,
+                detail      TEXT NOT NULL,
+                actor       TEXT NOT NULL,
+                event_at    TEXT NOT NULL,
+                fetched_at  TEXT NOT NULL,
+                read        INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_jira_notif_read ON JiraNotification(read, event_at DESC);
+            PRAGMA user_version = 5;
+            "#,
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
     Ok(())
 }
 
@@ -117,6 +143,20 @@ fn seed(conn: &Connection) -> Result<(), String> {
         // M3-B5: 전역 단축키 (빈 문자열=비활성). Setting 값으로 setup 에서 등록.
         ("hotkey_toggle", "Ctrl+Alt+W"), // 메인 창 표시/숨김 토글
         ("hotkey_quick", "Ctrl+Alt+A"),  // 빠른 추가 소형 창 열기
+        // M4: Jira 알림 (기획서 6절). 토큰은 평문 저장(개인 PC 로컬 DB 한정).
+        ("jira_enabled", "0"),                            // 연동 토글
+        ("jira_base_url", "https://gmdsoft.atlassian.net"), // 사이트 URL
+        ("jira_email", ""),                               // 계정 이메일
+        ("jira_api_token", ""),                           // API 토큰 (UI 마스킹)
+        ("jira_account_id", ""),                          // 연결 테스트 성공 시 자동 저장
+        ("jira_project", "APP"),                          // 감시 프로젝트 키
+        // 알림 받을 분류(CSV). 빈값이면 전부 on 으로 간주(jira.rs filter_enabled).
+        ("jira_categories", "created,assignee,comment,mention,assigned"), // 기본: 상태·필드 변경 제외
+        // 담당자가 나인 이슈만(생성·상태·필드 분류에만 적용). 기본 ON.
+        ("jira_my_issues_only", "1"),
+        ("jira_poll_secs", "180"),                        // 폴링 주기(초, 최소 60)
+        ("jira_last_poll", ""),                           // 마지막 폴링 시각(RFC3339)
+        ("jira_last_error", ""),                          // 마지막 폴링 오류(성공 시 빈값)
     ];
     for (k, v) in defaults {
         conn.execute(
@@ -174,6 +214,12 @@ fn seed(conn: &Connection) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// 테스트 전용: 타 모듈 단위 테스트(jira 등)에서 스키마를 준비할 때 사용.
+#[cfg(test)]
+pub(crate) fn migrate_for_test(conn: &Connection) {
+    migrate(conn).unwrap();
 }
 
 // ── 단위 테스트 ──────────────────────────────────────────
@@ -235,17 +281,28 @@ mod tests {
         cols.iter().any(|c| c == "priority")
     }
 
-    // 신규 DB: migrate 1회로 v2/v3/v4 컬럼 생성 + user_version=4
-    #[test]
-    fn migrate_fresh_db_to_v4() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn).unwrap();
-        assert_eq!(has_columns(&conn), (true, true, 4));
-        assert_eq!(has_task_columns(&conn), (true, true));
-        assert!(has_priority_column(&conn));
+    /// JiraNotification 테이블이 있는지 (v5)
+    fn has_jira_table(conn: &Connection) -> bool {
+        conn.query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='JiraNotification'",
+            [],
+            |_| Ok(true),
+        )
+        .unwrap_or(false)
     }
 
-    // 기존 v1 DB(컬럼 없음, user_version=0): migrate 로 v3 까지 자동 업그레이드
+    // 신규 DB: migrate 1회로 v2/v3/v4/v5 스키마 생성 + user_version=5
+    #[test]
+    fn migrate_fresh_db_to_v5() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        assert_eq!(has_columns(&conn), (true, true, 5));
+        assert_eq!(has_task_columns(&conn), (true, true));
+        assert!(has_priority_column(&conn));
+        assert!(has_jira_table(&conn));
+    }
+
+    // 기존 v1 DB(컬럼 없음, user_version=0): migrate 로 v5 까지 자동 업그레이드
     #[test]
     fn migrate_v1_db_upgrades() {
         let conn = Connection::open_in_memory().unwrap();
@@ -264,9 +321,10 @@ mod tests {
         )
         .unwrap();
         migrate(&conn).unwrap();
-        assert_eq!(has_columns(&conn), (true, true, 4));
+        assert_eq!(has_columns(&conn), (true, true, 5));
         assert_eq!(has_task_columns(&conn), (true, true));
         assert!(has_priority_column(&conn));
+        assert!(has_jira_table(&conn));
         // 기존 행은 DEFAULT 'done' 으로 채워짐
         let status: String = conn
             .query_row("SELECT status FROM CheckLog WHERE task_id=1", [], |r| r.get(0))
@@ -274,9 +332,9 @@ mod tests {
         assert_eq!(status, "done");
     }
 
-    // 기존 v2 DB(status/memo 있음, notify 없음): migrate 로 v3·v4 컬럼 추가
+    // 기존 v2 DB(status/memo 있음, notify 없음): migrate 로 v3·v4·v5 스키마 추가
     #[test]
-    fn migrate_v2_db_upgrades_to_v4() {
+    fn migrate_v2_db_upgrades_to_v5() {
         let conn = Connection::open_in_memory().unwrap();
         // v1 CREATE → v2 ALTER 까지만 재현 (Task 는 notify 컬럼 없음)
         conn.execute_batch(
@@ -300,15 +358,16 @@ mod tests {
         )
         .unwrap();
         migrate(&conn).unwrap();
-        assert_eq!(has_columns(&conn), (true, true, 4));
+        assert_eq!(has_columns(&conn), (true, true, 5));
         assert_eq!(has_task_columns(&conn), (true, true));
         assert!(has_priority_column(&conn));
+        assert!(has_jira_table(&conn));
     }
 
-    // 기존 v3 DB(notify/remind 있음, priority 없음): migrate 로 v4 priority 컬럼만 추가.
+    // 기존 v3 DB(notify/remind 있음, priority 없음): migrate 로 v4 priority + v5 Jira 스키마 추가.
     // 기존 행은 DEFAULT 1(보통)로 채워진다.
     #[test]
-    fn migrate_v3_db_upgrades_to_v4() {
+    fn migrate_v3_db_upgrades_to_v5() {
         let conn = Connection::open_in_memory().unwrap();
         // v1 CREATE → v2/v3 ALTER 까지 재현 (Task 는 priority 컬럼 없음)
         conn.execute_batch(
@@ -327,8 +386,9 @@ mod tests {
         .unwrap();
         migrate(&conn).unwrap();
         let ver: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(ver, 4);
+        assert_eq!(ver, 5);
         assert!(has_priority_column(&conn));
+        assert!(has_jira_table(&conn));
         // 기존 행은 DEFAULT 1(보통) 으로 채워짐
         let priority: i64 = conn
             .query_row("SELECT priority FROM Task WHERE name='기존업무'", [], |r| r.get(0))
@@ -336,14 +396,15 @@ mod tests {
         assert_eq!(priority, 1);
     }
 
-    // 재실행 idempotent: 이미 v4 인 DB 에 migrate 를 또 호출해도 안전
+    // 재실행 idempotent: 이미 v5 인 DB 에 migrate 를 또 호출해도 안전
     #[test]
-    fn migrate_idempotent_on_v4() {
+    fn migrate_idempotent_on_v5() {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
-        migrate(&conn).unwrap(); // 두 번째 호출은 ALTER 건너뜀
-        assert_eq!(has_columns(&conn), (true, true, 4));
+        migrate(&conn).unwrap(); // 두 번째 호출은 ALTER/CREATE 건너뜀
+        assert_eq!(has_columns(&conn), (true, true, 5));
         assert_eq!(has_task_columns(&conn), (true, true));
         assert!(has_priority_column(&conn));
+        assert!(has_jira_table(&conn));
     }
 }

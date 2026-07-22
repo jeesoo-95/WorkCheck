@@ -51,23 +51,29 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/// 트레이 툴팁 갱신 — "업무 체크 — 미체크 N건" (N = 오늘 미체크 + 밀림)
+/// 트레이 툴팁 갱신 — "업무 체크 — 미체크 N건 · Jira M건"
+/// (N = 오늘 미체크 + 밀림, M = Jira 안읽음. Jira 는 0이면 표기 생략)
 pub fn update_tooltip(app: &AppHandle) {
-    let n = {
+    let (n, jira) = {
         let state = app.state::<AppState>();
         let Ok(conn) = state.db.lock() else {
             return;
         };
-        commands::pending_summary(&conn)
+        let n = commands::pending_summary(&conn)
             .map(|s| s.total)
-            .unwrap_or(0)
+            .unwrap_or(0);
+        let jira = crate::jira::unread_count(&conn).unwrap_or(0);
+        (n, jira)
     };
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        let tip = if n > 0 {
+        let mut tip = if n > 0 {
             format!("업무 체크 — 미체크 {}건", n)
         } else {
             "업무 체크 — 미체크 없음".to_string()
         };
+        if jira > 0 {
+            tip.push_str(&format!(" · Jira {}건", jira));
+        }
         let _ = tray.set_tooltip(Some(tip));
     }
 }

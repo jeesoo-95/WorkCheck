@@ -1081,6 +1081,114 @@ pub fn restore_backup(app: tauri::AppHandle, state: State<AppState>) -> Result<S
     Ok(src.to_string_lossy().into_owned())
 }
 
+// ── M4: Jira 알림 (네트워크·파싱은 jira.rs, 여기는 커맨드 래퍼) ──
+
+/// 연결 테스트 — /rest/api/3/myself 호출. 성공 시 accountId 는 프론트가 Setting 에 저장.
+#[tauri::command]
+pub fn jira_test_connection(url: String, email: String, token: String) -> Result<JiraUser, String> {
+    crate::jira::test_connection(&url, &email, &token)
+}
+
+/// 수동 새로고침 — 즉시 폴링(활성/미설정 여부는 jira::poll_now 가 판정).
+#[tauri::command]
+pub fn jira_poll_now(app: tauri::AppHandle) -> Result<PollResult, String> {
+    Ok(crate::jira::poll_now(&app))
+}
+
+/// 알림 피드 조회 (event_at 내림차순). only_unread·category(전체=None/"all") 필터 + 페이징.
+#[tauri::command]
+pub fn get_jira_notifications(
+    state: State<AppState>,
+    only_unread: bool,
+    category: Option<String>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<JiraNotificationRow>, String> {
+    use rusqlite::types::Value as SqlValue;
+    let conn = state.db.lock().map_err(e2s)?;
+
+    // 필터를 위치 바인딩으로 동적 구성 (category 는 "all"/빈값이면 미적용)
+    let cat = category.filter(|c| c != "all" && !c.is_empty());
+    let mut where_sql = String::from(" WHERE 1=1");
+    let mut binds: Vec<SqlValue> = Vec::new();
+    if only_unread {
+        where_sql.push_str(" AND read=0");
+    }
+    if let Some(c) = &cat {
+        binds.push(SqlValue::Text(c.clone()));
+        where_sql.push_str(&format!(" AND category=?{}", binds.len()));
+    }
+    binds.push(SqlValue::Integer(limit));
+    let limit_pos = binds.len();
+    binds.push(SqlValue::Integer(offset));
+    let offset_pos = binds.len();
+
+    let sql = format!(
+        "SELECT id,event_uid,issue_key,project_key,category,summary,detail,actor,event_at,fetched_at,read \
+         FROM JiraNotification{} ORDER BY event_at DESC LIMIT ?{} OFFSET ?{}",
+        where_sql, limit_pos, offset_pos
+    );
+    let mut stmt = conn.prepare(&sql).map_err(e2s)?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(binds.iter()), |r| {
+            Ok(JiraNotificationRow {
+                id: r.get(0)?,
+                event_uid: r.get(1)?,
+                issue_key: r.get(2)?,
+                project_key: r.get(3)?,
+                category: r.get(4)?,
+                summary: r.get(5)?,
+                detail: r.get(6)?,
+                actor: r.get(7)?,
+                event_at: r.get(8)?,
+                fetched_at: r.get(9)?,
+                read: r.get(10)?,
+            })
+        })
+        .map_err(e2s)?;
+    let mut v = Vec::new();
+    for row in rows {
+        v.push(row.map_err(e2s)?);
+    }
+    Ok(v)
+}
+
+/// 안읽음 개수 (탭 배지용)
+#[tauri::command]
+pub fn get_jira_unread_count(state: State<AppState>) -> Result<i64, String> {
+    let conn = state.db.lock().map_err(e2s)?;
+    crate::jira::unread_count(&conn)
+}
+
+/// 개별/선택 읽음 처리
+#[tauri::command]
+pub fn mark_jira_read(app: tauri::AppHandle, state: State<AppState>, ids: Vec<i64>) -> Result<(), String> {
+    {
+        let conn = state.db.lock().map_err(e2s)?;
+        for id in &ids {
+            conn.execute(
+                "UPDATE JiraNotification SET read=1 WHERE id=?1",
+                params![id],
+            )
+            .map_err(e2s)?;
+        }
+    }
+    crate::tray::update_tooltip(&app);
+    Ok(())
+}
+
+/// 전체 읽음 처리
+#[tauri::command]
+pub fn mark_all_jira_read(app: tauri::AppHandle, state: State<AppState>) -> Result<(), String> {
+    {
+        let conn = state.db.lock().map_err(e2s)?;
+        conn.execute("UPDATE JiraNotification SET read=1 WHERE read=0", [])
+            .map_err(e2s)?;
+    }
+    crate::tray::update_tooltip(&app);
+    Ok(())
+}
+
 // ── 단위 테스트 ──────────────────────────────────────────
 // range_stats / range_counts 는 Connection 없이 동작하는 순수 함수라 여기서 검증한다.
 #[cfg(test)]

@@ -211,6 +211,9 @@ pub fn start(app: AppHandle) {
             // ── 업무별 알림 · 사전 리마인드 (전역 스위치와 무관) ──
             per_task_tick(&app, &mut per_task_sent, &mut per_task_reminded);
 
+            // ── Jira 폴링 (활성·경과시간 판정은 poll_tick 내부에서) ──
+            crate::jira::poll_tick(&app);
+
             // ── 트레이 툴팁 갱신 ──
             tray::update_tooltip(&app);
         }

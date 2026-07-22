@@ -20,6 +20,7 @@
   <button class="tab active" data-page="p-today" role="tab">오늘</button>
   <button class="tab" data-page="p-manage" role="tab">전체 업무</button>
   <button class="tab" data-page="p-stats" role="tab">통계</button>
+  <button class="tab" data-page="p-jira" role="tab">Jira <span class="tab-badge" id="jira-tab-badge" style="display:none">0</span></button>
   <button class="tab" data-page="p-settings" role="tab">설정</button>
 </div>
 
@@ -79,6 +80,24 @@
     <div class="heat-title">이번 달 일별 수행 현황 <span style="font-weight:400;color:var(--txt-faint)">(진할수록 완료 많음 · 빨강 = 미수행)</span></div>
     <div class="heat" id="heat"></div>
   </div>
+</div>
+
+<!-- ═══════════ Jira 알림 탭 ═══════════ -->
+<div class="page" id="p-jira">
+  <div class="jira-head">
+    <h1>Jira 알림</h1>
+    <div class="jira-actions" id="jira-actions" style="display:none">
+      <button class="btn-ghost" id="jira-refresh">새로고침</button>
+      <button class="btn-ghost" id="jira-read-all">전체 읽음</button>
+    </div>
+  </div>
+
+  <div class="jira-toolbar" id="jira-toolbar" style="display:none">
+    <div class="jira-filters" id="jira-filters"></div>
+    <label class="jira-unread-toggle"><input type="checkbox" id="jira-only-unread"> 안읽음만</label>
+  </div>
+  <div class="jira-status" id="jira-status"></div>
+  <div id="jira-feed"></div>
 </div>
 
 <!-- ═══════════ 설정 탭 ═══════════ -->
@@ -171,6 +190,70 @@
         </div>
       </div>
       <div class="backup-msg" id="backup-msg"></div>
+    </div>
+
+    <div class="set-group">
+      <h2>Jira 연동</h2>
+      <div class="set-note">API 토큰은 이 PC 로컬 DB에 평문 저장됩니다. 백업 파일 공유에 주의하세요.</div>
+      <div class="set-row">
+        <div><div class="set-label">Jira 알림 사용</div><div class="set-sub">주기적으로 폴링해 인앱 피드·트레이로 알림</div></div>
+        <label class="switch"><input type="checkbox" id="jira-enabled"><span class="slider"></span></label>
+      </div>
+      <div class="set-row">
+        <div><div class="set-label">사이트 URL</div></div>
+        <input type="text" id="jira-base-url" class="jira-input" placeholder="https://gmdsoft.atlassian.net">
+      </div>
+      <div class="set-row">
+        <div><div class="set-label">이메일</div></div>
+        <input type="text" id="jira-email" class="jira-input" placeholder="you@gmdsoft.com">
+      </div>
+      <div class="set-row">
+        <div><div class="set-label">API 토큰</div><div class="set-sub"><a class="jira-link" id="jira-token-link" role="button" tabindex="0">토큰 발급하기 ↗</a></div></div>
+        <input type="password" id="jira-api-token" class="jira-input" placeholder="토큰 입력(저장값은 마스킹)">
+      </div>
+      <div class="set-row">
+        <div><div class="set-label">프로젝트 키</div><div class="set-sub">감시할 프로젝트</div></div>
+        <input type="text" id="jira-project" class="jira-input jira-input-sm" placeholder="APP">
+      </div>
+      <div class="set-row">
+        <div><div class="set-label">폴링 주기(초)</div><div class="set-sub">최소 60초</div></div>
+        <input type="number" id="jira-poll-secs" class="jira-input jira-input-sm" min="60" value="180">
+      </div>
+      <div class="set-row">
+        <div><div class="set-label">연결 테스트</div><div class="set-sub">계정 확인 후 accountId를 자동 저장합니다</div></div>
+        <div class="test-wrap">
+          <button class="btn-ghost" id="jira-test">연결 테스트</button>
+          <span class="jira-test-msg" id="jira-test-msg"></span>
+        </div>
+      </div>
+      <div class="set-row">
+        <div><div class="set-label">담당자가 나인 이슈만<span class="info-tip" tabindex="0" role="button" aria-label="도움말"><span class="info-pop">ON이면 생성·상태 변경·필드 변경 알림을 현재 담당자가 나인 이슈로 제한합니다. 담당자 변경·댓글·멘션·내 담당 지정은 영향받지 않습니다.</span></span></div><div class="set-sub">생성·상태 변경·필드 변경에만 적용 (댓글·멘션·담당 지정은 항상 수신)</div></div>
+        <label class="switch"><input type="checkbox" id="jira-my-issues-only"><span class="slider"></span></label>
+      </div>
+      <div class="set-row">
+        <div><div class="set-label">알림 받을 분류<span class="info-tip" tabindex="0" role="button" aria-label="분류 설명"><span class="info-pop">
+          <table>
+            <tr><th>분류</th><th>대상</th><th>설명</th></tr>
+            <tr><td>생성</td><td>APP</td><td>새 이슈 생성</td></tr>
+            <tr><td>상태 변경</td><td>APP</td><td>상태 전환 (예: 할 일 → 진행 중)</td></tr>
+            <tr><td>담당자 변경</td><td>APP</td><td>담당자가 타인으로 변경·해제</td></tr>
+            <tr><td>필드 변경</td><td>APP</td><td>우선순위·라벨·기한 등 그 외 필드</td></tr>
+            <tr><td>댓글</td><td>APP</td><td>새 댓글 (멘션 없는)</td></tr>
+            <tr><td>멘션</td><td>전체</td><td>댓글에서 나를 @멘션</td></tr>
+            <tr><td>내 담당 지정</td><td>전체</td><td>담당자가 나로 지정됨</td></tr>
+          </table>
+          <div class="info-note">내가 한 행동은 알림에서 제외 · '담당자가 나인 이슈만' ON이면 생성·상태·필드는 내 담당 이슈로 제한</div>
+        </span></span></div><div class="set-sub">선택한 분류만 피드·트레이에 표시</div></div>
+        <div class="jira-cats" id="jira-cats">
+          <label><input type="checkbox" class="jira-cat" value="created"> 생성</label>
+          <label><input type="checkbox" class="jira-cat" value="status"> 상태 변경</label>
+          <label><input type="checkbox" class="jira-cat" value="assignee"> 담당자 변경</label>
+          <label><input type="checkbox" class="jira-cat" value="field"> 필드 변경</label>
+          <label><input type="checkbox" class="jira-cat" value="comment"> 댓글</label>
+          <label><input type="checkbox" class="jira-cat" value="mention"> 멘션</label>
+          <label><input type="checkbox" class="jira-cat" value="assigned"> 내 담당 지정</label>
+        </div>
+      </div>
     </div>
 
     <div class="set-group">

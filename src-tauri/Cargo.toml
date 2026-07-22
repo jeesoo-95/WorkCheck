@@ -24,6 +24,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled", "backup"] }
 chrono = { version = "0.4", features = ["serde"] }
+# M4 Jira 알림: 백그라운드 폴링 스레드가 std::thread 라 blocking 클라이언트 사용 (async/tokio 미도입)
+reqwest = { version = "0.12", features = ["blocking", "json"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

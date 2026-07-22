@@ -3,6 +3,7 @@
 mod commands;
 mod db;
 mod hotkey;
+mod jira;
 mod model;
 mod notify;
 mod recur;
@@ -147,6 +148,12 @@ pub fn run() {
             commands::set_autostart,
             commands::backup_now,
             commands::restore_backup,
+            commands::jira_test_connection,
+            commands::jira_poll_now,
+            commands::get_jira_notifications,
+            commands::get_jira_unread_count,
+            commands::mark_jira_read,
+            commands::mark_all_jira_read,
             hotkey::set_hotkey,
             hotkey::hide_quick_window,
             hotkey::notify_task_added,

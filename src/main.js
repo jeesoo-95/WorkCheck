@@ -75,6 +75,7 @@ const loaders = {
   'p-today': loadToday,
   'p-manage': loadManage,
   'p-stats': loadStats,
+  'p-jira': loadJira,
   'p-settings': loadSettings,
 };
 document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
@@ -756,6 +757,186 @@ function renderDayModal(date, occ) {
   });
 }
 
+// ── Jira 알림 탭 ──────────────────────────────────────────
+// 필터 칩 정의. 'all' 은 전체(카테고리 미적용).
+const JIRA_CATS = [
+  { k: 'all', label: '전체' },
+  { k: 'created', label: '생성' },
+  { k: 'status', label: '상태' },
+  { k: 'assignee', label: '담당자' },
+  { k: 'field', label: '필드' },
+  { k: 'comment', label: '댓글' },
+  { k: 'mention', label: '멘션' },
+  { k: 'assigned', label: '내 담당' },
+];
+const JIRA_CAT_LABEL = { created: '생성', status: '상태', assignee: '담당자', field: '필드', comment: '댓글', mention: '멘션', assigned: '내 담당' };
+
+let jiraFilter = 'all';      // 현재 카테고리 필터
+let jiraOnlyUnread = false;  // 안읽음만 토글
+let jiraBaseUrl = '';        // 행 클릭 시 브라우저 열기용 (loadJira 에서 갱신)
+
+// 상대 시각 표기 (RFC3339 → "방금/N분 전/N시간 전/N일 전/MM/DD")
+function relTime(iso) {
+  const t = new Date(iso);
+  if (isNaN(t.getTime())) return iso || '';
+  const diff = Math.floor((Date.now() - t.getTime()) / 1000);
+  if (diff < 60) return '방금';
+  if (diff < 3600) return Math.floor(diff / 60) + '분 전';
+  if (diff < 86400) return Math.floor(diff / 3600) + '시간 전';
+  if (diff < 86400 * 7) return Math.floor(diff / 86400) + '일 전';
+  return `${t.getMonth() + 1}/${t.getDate()}`;
+}
+
+// 탭 배지 갱신 (안읽음 수). 0이면 숨김.
+function setJiraBadge(count) {
+  const b = document.getElementById('jira-tab-badge');
+  if (!b) return;
+  if (count > 0) { b.textContent = count; b.style.display = ''; }
+  else b.style.display = 'none';
+}
+async function updateJiraBadge() {
+  try { setJiraBadge(await invoke('get_jira_unread_count')); } catch { /* 조용히 무시 */ }
+}
+
+// 필터 칩 렌더 + 클릭 바인딩
+function renderJiraFilters() {
+  const wrap = document.getElementById('jira-filters');
+  wrap.innerHTML = JIRA_CATS.map(c =>
+    `<button class="jchip${jiraFilter === c.k ? ' active' : ''}" data-cat="${c.k}">${c.label}</button>`
+  ).join('');
+  wrap.querySelectorAll('.jchip').forEach(chip => {
+    chip.addEventListener('click', () => { jiraFilter = chip.dataset.cat; loadJira(); });
+  });
+}
+
+// 알림 행 HTML
+function jiraRowHtml(n) {
+  const unread = n.read === 0;
+  return `<div class="jira-item${unread ? ' unread' : ''}" data-id="${n.id}" data-key="${esc(n.issueKey)}" tabindex="0" role="button">
+    <span class="jbadge jcat-${esc(n.category)}">${JIRA_CAT_LABEL[n.category] || esc(n.category)}</span>
+    <div class="jira-item-body">
+      <div class="jira-item-top"><span class="jkey">${esc(n.issueKey)}</span><span class="jsummary">${esc(n.summary)}</span></div>
+      <div class="jira-item-detail">${esc(n.detail)}</div>
+      <div class="jira-item-meta">${esc(n.actor)} · ${relTime(n.eventAt)}</div>
+    </div>
+  </div>`;
+}
+
+async function loadJira() {
+  let settings;
+  try { settings = await invoke('get_settings'); clearError(); }
+  catch (e) { showError(e.message || e, loadJira); return; }
+  const map = {};
+  settings.forEach(s => map[s.key] = s.value);
+  jiraBaseUrl = (map.jira_base_url || '').replace(/\/+$/, '');
+
+  const configured = !!(map.jira_api_token && map.jira_email && map.jira_base_url);
+  const enabled = map.jira_enabled === '1';
+  const feed = document.getElementById('jira-feed');
+  const toolbar = document.getElementById('jira-toolbar');
+  const actions = document.getElementById('jira-actions');
+  const status = document.getElementById('jira-status');
+
+  // 미설정/비활성 → 안내 + 설정 이동 버튼
+  if (!configured || !enabled) {
+    toolbar.style.display = 'none';
+    actions.style.display = 'none';
+    status.textContent = '';
+    const msg = !configured
+      ? 'Jira 연동이 설정되지 않았습니다. 설정 탭에서 URL·이메일·API 토큰을 입력하세요.'
+      : 'Jira 알림이 꺼져 있습니다. 설정 탭에서 "Jira 알림 사용"을 켜세요.';
+    feed.innerHTML = `<div class="empty">${msg}<br><a data-goto="p-settings">설정으로 이동</a></div>`;
+    feed.querySelector('[data-goto]')?.addEventListener('click', () => switchTo('p-settings'));
+    updateJiraBadge();
+    return;
+  }
+
+  toolbar.style.display = '';
+  actions.style.display = '';
+  renderJiraFilters();
+  document.getElementById('jira-only-unread').checked = jiraOnlyUnread;
+
+  // 상태줄: 마지막 폴링·오류
+  if (map.jira_last_error) {
+    status.innerHTML = `<span class="jira-err">⚠ 폴링 오류: ${esc(map.jira_last_error)}</span>`;
+  } else if (map.jira_last_poll) {
+    status.textContent = `마지막 폴링: ${relTime(map.jira_last_poll)}`;
+  } else {
+    status.textContent = '아직 폴링 이력이 없습니다.';
+  }
+
+  // 피드 조회 (event_at DESC, 50개)
+  let rows;
+  try {
+    rows = await invoke('get_jira_notifications', {
+      onlyUnread: jiraOnlyUnread,
+      category: jiraFilter,
+      limit: 50,
+      offset: 0,
+    });
+    clearError();
+  } catch (e) { showError(e.message || e, loadJira); return; }
+
+  if (!rows.length) {
+    feed.innerHTML = '<div class="empty">표시할 알림이 없습니다.</div>';
+  } else {
+    feed.innerHTML = rows.map(jiraRowHtml).join('');
+    feed.querySelectorAll('.jira-item').forEach(item => {
+      const open = () => openJiraItem(item);
+      item.addEventListener('click', open);
+      item.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+    });
+  }
+  updateJiraBadge();
+}
+
+// 행 클릭 → 읽음 처리 + 브라우저로 이슈 열기
+async function openJiraItem(item) {
+  const id = Number(item.dataset.id);
+  const key = item.dataset.key;
+  try {
+    await invoke('mark_jira_read', { ids: [id] });
+    item.classList.remove('unread');
+    updateJiraBadge();
+    if (jiraBaseUrl && key) await invoke('open_link', { url: `${jiraBaseUrl}/browse/${key}` });
+    clearError();
+    // 안읽음만 보기 중이면 방금 읽은 항목이 목록에서 빠지도록 갱신
+    if (jiraOnlyUnread) loadJira();
+  } catch (e) { showError(e.message || e, null); }
+}
+
+// 새로고침 (수동 폴링)
+document.getElementById('jira-refresh').addEventListener('click', async () => {
+  const status = document.getElementById('jira-status');
+  status.textContent = '새로고침 중…';
+  try {
+    const r = await invoke('jira_poll_now');
+    if (r.error) showError(r.error, null); else clearError();
+  } catch (e) { showError(e.message || e, null); }
+  loadJira();
+});
+// 전체 읽음
+document.getElementById('jira-read-all').addEventListener('click', async () => {
+  try { await invoke('mark_all_jira_read'); clearError(); } catch (e) { showError(e.message || e, null); }
+  loadJira();
+});
+// 안읽음만 토글
+document.getElementById('jira-only-unread').addEventListener('change', e => {
+  jiraOnlyUnread = e.target.checked;
+  loadJira();
+});
+
+// jira-updated 이벤트: 백엔드 폴링이 새 알림을 넣으면 배지·피드 갱신
+function wireJiraEvent() {
+  if (window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.listen) {
+    window.__TAURI__.event.listen('jira-updated', e => {
+      setJiraBadge(e.payload || 0);
+      const active = document.querySelector('.tab.active');
+      if (active && active.dataset.page === 'p-jira') loadJira();
+    });
+  }
+}
+
 // ── 설정 탭 ──────────────────────────────────────────────
 async function loadSettings() {
   let settings, holidays;
@@ -776,6 +957,25 @@ async function loadSettings() {
   // 단축키 (Setting 값 그대로 표기, 빈 값=비활성)
   document.getElementById('hk-toggle').value = map.hotkey_toggle || '';
   document.getElementById('hk-quick').value = map.hotkey_quick || '';
+
+  // Jira 연동 (토큰은 저장돼 있으면 자리표시 마스킹만, 실제 값은 노출 안 함)
+  document.getElementById('jira-enabled').checked = map.jira_enabled === '1';
+  document.getElementById('jira-base-url').value = map.jira_base_url || '';
+  document.getElementById('jira-email').value = map.jira_email || '';
+  const tokenInput = document.getElementById('jira-api-token');
+  tokenInput.value = '';
+  tokenInput.placeholder = map.jira_api_token ? '••••••••(저장됨) — 변경 시 새 토큰 입력' : '토큰 입력';
+  document.getElementById('jira-project').value = map.jira_project || 'APP';
+  document.getElementById('jira-poll-secs').value = map.jira_poll_secs || '180';
+  // 담당자가 나인 이슈만 (값 없으면 기본 ON)
+  document.getElementById('jira-my-issues-only').checked = map.jira_my_issues_only !== '0';
+  // 알림 받을 분류 (CSV, 값 없음=전부 on). 체크 상태로 반영.
+  const catSet = map.jira_categories
+    ? new Set(map.jira_categories.split(',').map(s => s.trim()).filter(Boolean))
+    : null;
+  document.querySelectorAll('.jira-cat').forEach(cb => {
+    cb.checked = catSet ? catSet.has(cb.value) : true;
+  });
 
   // 자동 시작 상태는 플러그인에서 조회 (Setting 아님)
   try { document.getElementById('set-autostart').checked = await invoke('get_autostart'); }
@@ -878,6 +1078,62 @@ document.getElementById('set-notify-test').addEventListener('click', async () =>
   } catch (e) { showError(e.message || e, null); }
 });
 
+// ── Jira 연동 설정 저장/테스트 ────────────────────────────
+// 토큰 입력칸이 비어 있으면(마스킹 상태 그대로) 기존 저장값을 덮어쓰지 않는다.
+document.getElementById('jira-enabled').addEventListener('change', e => saveSetting('jira_enabled', e.target.checked ? '1' : '0'));
+document.getElementById('jira-base-url').addEventListener('change', e => saveSetting('jira_base_url', e.target.value.trim()));
+document.getElementById('jira-email').addEventListener('change', e => saveSetting('jira_email', e.target.value.trim()));
+document.getElementById('jira-project').addEventListener('change', e => saveSetting('jira_project', e.target.value.trim() || 'APP'));
+document.getElementById('jira-poll-secs').addEventListener('change', e => {
+  const n = Math.max(60, Number(e.target.value) || 180);
+  e.target.value = n; // 최소 60초로 보정 표시
+  saveSetting('jira_poll_secs', String(n));
+});
+document.getElementById('jira-api-token').addEventListener('change', e => {
+  const v = e.target.value.trim();
+  if (v) saveSetting('jira_api_token', v); // 빈칸이면 기존 토큰 유지
+});
+// 담당자가 나인 이슈만 토글 (created·status·field 분류에만 적용)
+document.getElementById('jira-my-issues-only').addEventListener('change', e =>
+  saveSetting('jira_my_issues_only', e.target.checked ? '1' : '0'));
+// 알림 받을 분류 토글 → 체크된 것만 CSV 로 저장(전부 해제=빈값=백엔드에서 전부 on).
+document.querySelectorAll('.jira-cat').forEach(cb => {
+  cb.addEventListener('change', () => {
+    const csv = [...document.querySelectorAll('.jira-cat')]
+      .filter(c => c.checked).map(c => c.value).join(',');
+    saveSetting('jira_categories', csv);
+  });
+});
+// 토큰 발급 페이지 열기
+document.getElementById('jira-token-link').addEventListener('click', async () => {
+  try { await invoke('open_link', { url: 'https://id.atlassian.com/manage-profile/security/api-tokens' }); clearError(); }
+  catch (e) { showError(e.message || e, null); }
+});
+// 연결 테스트 → 성공 시 accountId 자동 저장 + 이름 표시
+document.getElementById('jira-test').addEventListener('click', async () => {
+  const msg = document.getElementById('jira-test-msg');
+  const url = document.getElementById('jira-base-url').value.trim();
+  const email = document.getElementById('jira-email').value.trim();
+  const token = document.getElementById('jira-api-token').value.trim();
+  if (!url || !email || !token) {
+    msg.textContent = '✕ URL·이메일·토큰을 모두 입력하세요';
+    msg.className = 'jira-test-msg err';
+    return;
+  }
+  msg.textContent = '확인 중…';
+  msg.className = 'jira-test-msg';
+  try {
+    const u = await invoke('jira_test_connection', { url, email, token });
+    await invoke('set_setting', { key: 'jira_account_id', value: u.accountId });
+    msg.textContent = `✓ ${u.displayName || u.accountId} 님 연결됨`;
+    msg.className = 'jira-test-msg ok';
+    clearError();
+  } catch (e) {
+    msg.textContent = '✕ ' + (e.message || e);
+    msg.className = 'jira-test-msg err';
+  }
+});
+
 document.getElementById('hol-add-btn').addEventListener('click', async () => {
   const date = document.getElementById('hol-date').value;
   const name = document.getElementById('hol-name').value.trim();
@@ -924,6 +1180,8 @@ window.addEventListener('DOMContentLoaded', () => {
   loadTheme(); // 저장된 테마 로드→적용 (실패 시 시스템 따름)
   loadToday();
   wireTaskAddedEvent(); // 빠른 추가 등록 시 현재 탭 자동 갱신
+  wireJiraEvent();      // Jira 폴링 알림 수신 시 배지·피드 갱신
+  updateJiraBadge();    // 시작 시 Jira 안읽음 배지 초기화
 
   // 날짜 자동 동기화: 1분마다 확인(자정 후 최대 1분 내 갱신) + 창 재활성 시 즉시
   lastKnownDate = todayIso();
