@@ -15,6 +15,7 @@
 // - 한 history 는 status > assignee > field 우선순위로 1개 알림만 생성(event_uid=cl:{historyId}).
 // - APP 댓글이 멘션도 포함하면 mention 하나만 기록(comment 로 중복 기록하지 않음).
 // - actor 가 내 accountId 인 이벤트는 셀프 알림 방지로 제외한다.
+//   단, 댓글은 jira_include_my_comments=1(기본) 이면 내 댓글도 포함한다(APP 프로젝트 한정).
 
 use crate::commands::{self, AppState};
 use chrono::{DateTime, Duration, FixedOffset, Local};
@@ -55,6 +56,10 @@ struct JiraConfig {
     categories: HashSet<String>,
     /// 담당자가 나인 이슈만(created·status·field 분류에만 적용).
     my_issues_only: bool,
+    /// 새 알림 수신 시 윈도우 토스트 발송.
+    toast: bool,
+    /// 내가 작성한 댓글도 알림으로 포함(OFF 면 셀프 댓글 스킵).
+    include_my_comments: bool,
 }
 
 /// Setting 에서 Jira 설정을 로드. 필수값(url/email/token) 비면 None.
@@ -86,6 +91,8 @@ fn load_config(app: &AppHandle) -> Option<JiraConfig> {
             .map(|s| s.to_string())
             .collect(),
         my_issues_only: get("jira_my_issues_only") == "1",
+        toast: get("jira_toast") == "1",
+        include_my_comments: get("jira_include_my_comments") == "1",
     })
 }
 
@@ -206,6 +213,21 @@ fn field_label(field: &str) -> String {
     .to_string()
 }
 
+/// 알림 분류 → 표시용 한글(토스트·요약). 프런트 JIRA_CAT_LABEL(main.js) 과 일치.
+/// 미매핑 분류는 원문 유지.
+fn category_label(cat: &str) -> &str {
+    match cat {
+        "created" => "생성",
+        "status" => "상태",
+        "assignee" => "담당자",
+        "field" => "필드",
+        "comment" => "댓글",
+        "mention" => "멘션",
+        "assigned" => "내 담당",
+        other => other,
+    }
+}
+
 // ── ADF (댓글 본문) 처리 ──────────────────────────────────
 
 /// ADF 트리에서 표시용 텍스트를 재귀 추출. mention 노드는 attrs.text 사용.
@@ -264,6 +286,7 @@ pub struct NotifEvent {
 /// - my_issues_only: true 면 created·status·field 는 "현재 담당자가 나인 이슈"만 남긴다.
 ///   (assignee·assigned·comment·mention 은 미적용). 판정은 이벤트 시점이 아닌
 ///   search 응답의 "현재 assignee" 기준이라 과거 시점 담당자와 다를 수 있는 근사이다.
+/// - include_my_comments: true 면 내가 작성한 댓글도 comment/mention 이벤트로 생성(셀프 댓글 스킵 해제).
 pub fn classify_app_issue(
     issue: &Value,
     histories: &[Value],
@@ -271,6 +294,7 @@ pub fn classify_app_issue(
     since_ts: i64,
     my_id: &str,
     my_issues_only: bool,
+    include_my_comments: bool,
 ) -> Vec<NotifEvent> {
     let mut out = Vec::new();
     let key = issue["key"].as_str().unwrap_or_default().to_string();
@@ -384,7 +408,7 @@ pub fn classify_app_issue(
     }
 
     // 3) 댓글 — 멘션이면 mention, 아니면 comment (APP 이슈는 comment 도 기록)
-    out.extend(classify_comments(&key, &proj, &summary, comments, since_ts, my_id, true));
+    out.extend(classify_comments(&key, &proj, &summary, comments, since_ts, my_id, true, include_my_comments));
     out
 }
 
@@ -401,8 +425,8 @@ pub fn classify_mention_issue(
     }
     let proj = project_of(&key);
     let summary = issue["fields"]["summary"].as_str().unwrap_or_default().to_string();
-    // is_app=false → 멘션 아닌 댓글은 무시
-    classify_comments(&key, &proj, &summary, comments, since_ts, my_id, false)
+    // is_app=false → 멘션 아닌 댓글은 무시. 타 프로젝트는 셀프 댓글 스킵 유지(false).
+    classify_comments(&key, &proj, &summary, comments, since_ts, my_id, false, false)
 }
 
 /// 전 프로젝트 "assignee CHANGED TO currentUser()" 스캔 결과에서
@@ -466,6 +490,7 @@ pub fn classify_assigned_issue(
 }
 
 /// 댓글 목록 공통 분류. is_app_project=true 면 비멘션도 comment 로 기록, false 면 멘션만.
+/// include_my_comments=true 면 내가 작성한 댓글(author==my_id)도 스킵하지 않고 기록한다.
 fn classify_comments(
     key: &str,
     proj: &str,
@@ -474,6 +499,7 @@ fn classify_comments(
     since_ts: i64,
     my_id: &str,
     is_app_project: bool,
+    include_my_comments: bool,
 ) -> Vec<NotifEvent> {
     let mut out = Vec::new();
     for c in comments {
@@ -482,7 +508,7 @@ fn classify_comments(
             continue;
         }
         let author = &c["author"];
-        if author["accountId"].as_str().unwrap_or_default() == my_id {
+        if !include_my_comments && author["accountId"].as_str().unwrap_or_default() == my_id {
             continue;
         }
         let body = &c["body"];
@@ -522,9 +548,14 @@ fn filter_enabled(events: Vec<NotifEvent>, categories: &HashSet<String>) -> Vec<
         .collect()
 }
 
-/// 이벤트 일괄 저장(INSERT OR IGNORE dedup). 실제 신규 삽입된 행 수를 반환.
-pub fn insert_events(conn: &Connection, events: &[NotifEvent], fetched_at: &str) -> Result<usize, String> {
-    let mut n = 0usize;
+/// 이벤트 일괄 저장(INSERT OR IGNORE dedup). 실제 신규 삽입된(dedup 통과한) 이벤트만
+/// 입력 순서대로 참조로 반환한다(신규 건수 = 반환 Vec 길이, 토스트 요약에 사용).
+pub fn insert_events<'a>(
+    conn: &Connection,
+    events: &'a [NotifEvent],
+    fetched_at: &str,
+) -> Result<Vec<&'a NotifEvent>, String> {
+    let mut inserted: Vec<&NotifEvent> = Vec::new();
     for e in events {
         let changed = conn
             .execute(
@@ -544,9 +575,11 @@ pub fn insert_events(conn: &Connection, events: &[NotifEvent], fetched_at: &str)
                 ],
             )
             .map_err(e2s)?;
-        n += changed;
+        if changed > 0 {
+            inserted.push(e);
+        }
     }
-    Ok(n)
+    Ok(inserted)
 }
 
 /// 보존 정책: 읽음 + RETENTION_DAYS 경과 알림 삭제(테이블 무한 성장 방지).
@@ -718,6 +751,7 @@ fn fetch_and_classify(
             since_ts,
             &cfg.account_id,
             cfg.my_issues_only,
+            cfg.include_my_comments,
         ));
     }
 
@@ -782,7 +816,46 @@ fn ensure_account_id(app: &AppHandle, cfg: &mut JiraConfig) {
     }
 }
 
-/// 폴링 실행 + 결과 기록. 성공 시 last_poll 갱신·오류 초기화, 신규 있으면 emit·툴팁.
+/// 신규 알림 여러 건을 "분류 N · 분류 M" 형식으로 요약(첫 등장 순서 유지).
+fn category_count_summary(events: &[&NotifEvent]) -> String {
+    let mut counts: Vec<(&str, usize)> = Vec::new();
+    for e in events {
+        let c = e.category.as_str();
+        match counts.iter_mut().find(|(k, _)| *k == c) {
+            Some(entry) => entry.1 += 1,
+            None => counts.push((c, 1)),
+        }
+    }
+    counts
+        .iter()
+        .map(|(c, n)| format!("{} {}", category_label(c), n))
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// 신규 삽입 이벤트로 윈도우 토스트 발송(notify::toast 재사용).
+/// - 1건: 제목 "Jira · [분류] 이슈키", 본문은 이슈 요약·상세(80자 절단).
+/// - 2건 이상: 제목 "Jira 새 알림 N건", 본문은 분류별 건수 요약.
+fn send_new_toast(app: &AppHandle, events: &[&NotifEvent]) {
+    match events {
+        [] => {}
+        [e] => {
+            let title = format!("Jira · [{}] {}", category_label(&e.category), e.issue_key);
+            let body = match (e.summary.is_empty(), e.detail.is_empty()) {
+                (true, _) => truncate_chars(&e.detail, 80),
+                (false, true) => truncate_chars(&e.summary, 80),
+                (false, false) => truncate_chars(&format!("{} · {}", e.summary, e.detail), 80),
+            };
+            crate::notify::toast(app, &title, &body);
+        }
+        many => {
+            let title = format!("Jira 새 알림 {}건", many.len());
+            crate::notify::toast(app, &title, &category_count_summary(many));
+        }
+    }
+}
+
+/// 폴링 실행 + 결과 기록. 성공 시 last_poll 갱신·오류 초기화, 신규 있으면 토스트·emit·툴팁.
 /// 반환: (신규 삽입 수, 오류 메시지 Option)
 fn run_and_record(app: &AppHandle, mut cfg: JiraConfig) -> (i64, Option<String>) {
     ensure_account_id(app, &mut cfg);
@@ -796,17 +869,19 @@ fn run_and_record(app: &AppHandle, mut cfg: JiraConfig) -> (i64, Option<String>)
             // 삽입 전 enabled 분류만 남긴다(설정 없음=전부 on).
             let events = filter_enabled(events, &cfg.categories);
             let now = Local::now();
-            let inserted = {
+            // 신규 삽입된(dedup 통과) 이벤트 참조 — 토스트 요약에 사용. events 를 빌려온다.
+            let inserted_events: Vec<&NotifEvent> = {
                 let state = app.state::<AppState>();
                 let conn = match state.db.lock() {
                     Ok(c) => c,
                     Err(_) => return (0, Some("DB 잠금 실패".to_string())),
                 };
-                let n = insert_events(&conn, &events, &now.format("%Y-%m-%d %H:%M:%S").to_string())
-                    .unwrap_or(0);
+                let ins = insert_events(&conn, &events, &now.format("%Y-%m-%d %H:%M:%S").to_string())
+                    .unwrap_or_default();
                 let _ = cleanup_old(&conn);
-                n
+                ins
             };
+            let inserted = inserted_events.len();
             // 캡 절단 시 last_poll 을 워터마크로 기록해 다음 폴링이 이어서 가져간다.
             // 워터마크가 since 이하면 진행이 안 되므로(같은 구간 반복) now 로 폴백(초과분 유실 감수).
             let baseline = match watermark {
@@ -816,6 +891,9 @@ fn run_and_record(app: &AppHandle, mut cfg: JiraConfig) -> (i64, Option<String>)
             setting_write(app, "jira_last_poll", &baseline.to_rfc3339());
             setting_write(app, "jira_last_error", "");
             if inserted > 0 {
+                if cfg.toast {
+                    send_new_toast(app, &inserted_events);
+                }
                 emit_updated(app);
             }
             crate::tray::update_tooltip(app);
@@ -986,6 +1064,7 @@ mod tests {
             since_all(),
             ME,
             false,
+            false,
         );
         assert_eq!(ev.len(), 3);
         assert_eq!(ev[0].category, "created");
@@ -1006,7 +1085,7 @@ mod tests {
             "fields": { "summary": "제목", "created": "2020-01-01T00:00:00.000+0900",
                         "creator": { "accountId": OTHER, "displayName": "김창조" } }
         });
-        let ev = classify_app_issue(&issue, &[], &[mention_comment()], since_all(), ME, false);
+        let ev = classify_app_issue(&issue, &[], &[mention_comment()], since_all(), ME, false, false);
         // created 는 since_all 보다 이후이므로 1건 + 멘션 1건 = 2건. 댓글은 mention 만.
         let cats: Vec<&str> = ev.iter().map(|e| e.category.as_str()).collect();
         assert!(cats.contains(&"mention"));
@@ -1048,7 +1127,7 @@ mod tests {
             "author": { "accountId": ME, "displayName": "이지수" },
             "body": { "type": "doc", "content": [] }
         });
-        let ev = classify_app_issue(&issue, &[my_hist], &[my_comment], since_all(), ME, false);
+        let ev = classify_app_issue(&issue, &[my_hist], &[my_comment], since_all(), ME, false, false);
         assert!(ev.is_empty());
     }
 
@@ -1071,7 +1150,7 @@ mod tests {
         });
         // created 는 검증에서 제외하려고 since 를 created 이후로 설정
         let since = parse_time("2026-07-21T09:30:00.000+0900").unwrap().timestamp();
-        let ev = classify_app_issue(&issue, &[assignee_h, field_h], &[], since, ME, false);
+        let ev = classify_app_issue(&issue, &[assignee_h, field_h], &[], since, ME, false, false);
         assert_eq!(ev.len(), 2);
         assert_eq!(ev[0].category, "assignee");
         assert_eq!(ev[1].category, "field");
@@ -1084,7 +1163,7 @@ mod tests {
         let issue = app_issue(); // created 09:00
         // since = 09:30 → created(09:00) 제외, status(10:00) 포함
         let since = parse_time("2026-07-21T09:30:00.000+0900").unwrap().timestamp();
-        let ev = classify_app_issue(&issue, &[status_history()], &[], since, ME, false);
+        let ev = classify_app_issue(&issue, &[status_history()], &[], since, ME, false, false);
         assert_eq!(ev.len(), 1);
         assert_eq!(ev[0].category, "status");
     }
@@ -1101,11 +1180,12 @@ mod tests {
             since_all(),
             ME,
             false,
+            false,
         );
         let first = insert_events(&conn, &events, "2026-07-21 12:00:00").unwrap();
         let second = insert_events(&conn, &events, "2026-07-21 12:03:00").unwrap();
-        assert_eq!(first, 3); // created + status + comment
-        assert_eq!(second, 0); // 중복 → 모두 무시
+        assert_eq!(first.len(), 3); // created + status + comment
+        assert_eq!(second.len(), 0); // 중복 → 모두 무시
         let total: i64 = conn
             .query_row("SELECT COUNT(*) FROM JiraNotification", [], |r| r.get(0))
             .unwrap();
@@ -1156,7 +1236,7 @@ mod tests {
             "items": [{ "field": "assignee", "from": null, "to": ME,
                         "fromString": "없음", "toString": "이지수" }]
         });
-        let ev = classify_app_issue(&issue, &[to_me], &[], since, ME, false);
+        let ev = classify_app_issue(&issue, &[to_me], &[], since, ME, false, false);
         assert_eq!(ev.len(), 1);
         assert_eq!(ev[0].category, "assigned");
         assert_eq!(ev[0].event_uid, "APP-123:cl:3001");
@@ -1168,7 +1248,7 @@ mod tests {
             "items": [{ "field": "assignee", "to": OTHER,
                         "fromString": "없음", "toString": "박담당" }]
         });
-        let ev2 = classify_app_issue(&issue, &[to_other], &[], since, ME, false);
+        let ev2 = classify_app_issue(&issue, &[to_other], &[], since, ME, false, false);
         assert_eq!(ev2.len(), 1);
         assert_eq!(ev2[0].category, "assignee");
     }
@@ -1263,6 +1343,7 @@ mod tests {
             since_all(),
             ME,
             true,
+            false,
         );
         let cats: Vec<&str> = ev.iter().map(|e| e.category.as_str()).collect();
         assert!(!cats.contains(&"created"));
@@ -1295,11 +1376,117 @@ mod tests {
             "author": { "accountId": OTHER, "displayName": "김창조" },
             "items": [{ "field": "priority", "fromString": "Medium", "toString": "High" }]
         });
-        let ev = classify_app_issue(&issue, &[status_h, field_h], &[], since_all(), ME, true);
+        let ev = classify_app_issue(&issue, &[status_h, field_h], &[], since_all(), ME, true, false);
         let cats: Vec<&str> = ev.iter().map(|e| e.category.as_str()).collect();
         assert_eq!(ev.len(), 3);
         assert!(cats.contains(&"created"));
         assert!(cats.contains(&"status"));
         assert!(cats.contains(&"field"));
+    }
+
+    // 15) insert_events 는 신규 삽입된(dedup 통과) 이벤트만 입력 순서대로 참조 반환
+    #[test]
+    fn insert_events_returns_inserted_refs() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrate_for_test(&conn);
+        let events = classify_app_issue(
+            &app_issue(),
+            &[status_history()],
+            &[plain_comment()],
+            since_all(),
+            ME,
+            false,
+            false,
+        );
+        // 최초: 3건 모두 신규 → 원본 이벤트를 순서대로 가리킨다.
+        let inserted = insert_events(&conn, &events, "2026-07-21 12:00:00").unwrap();
+        let cats: Vec<&str> = inserted.iter().map(|e| e.category.as_str()).collect();
+        assert_eq!(cats, vec!["created", "status", "comment"]);
+        assert_eq!(inserted[0].event_uid, "APP-123:created");
+        // 동일 이벤트 재삽입 → dedup 으로 반환 비어 있음
+        let again = insert_events(&conn, &events, "2026-07-21 12:05:00").unwrap();
+        assert!(again.is_empty());
+        // 기존 1건 + 신규 1건 → 신규 1건만 반환
+        let mixed = vec![
+            events[0].clone(), // 이미 있음(created)
+            NotifEvent {
+                event_uid: "APP-123:cm:9999".to_string(),
+                ..events[2].clone()
+            },
+        ];
+        let ins2 = insert_events(&conn, &mixed, "2026-07-21 12:10:00").unwrap();
+        assert_eq!(ins2.len(), 1);
+        assert_eq!(ins2[0].event_uid, "APP-123:cm:9999");
+    }
+
+    // 16) 다건 토스트 요약: 분류별 건수, 첫 등장 순서, 표시명(JIRA_CAT_LABEL) 일치
+    #[test]
+    fn toast_category_summary_by_label() {
+        let mk = |cat: &str, uid: &str| NotifEvent {
+            event_uid: uid.to_string(),
+            issue_key: "APP-1".to_string(),
+            project_key: "APP".to_string(),
+            category: cat.to_string(),
+            summary: "s".to_string(),
+            detail: "d".to_string(),
+            actor: "a".to_string(),
+            event_at: String::new(),
+        };
+        let a = mk("comment", "1");
+        let b = mk("comment", "2");
+        let c = mk("mention", "3");
+        let refs = vec![&a, &b, &c];
+        assert_eq!(category_count_summary(&refs), "댓글 2 · 멘션 1");
+        // 표시명 매핑(프런트 JIRA_CAT_LABEL 과 동일)
+        assert_eq!(category_label("assigned"), "내 담당");
+        assert_eq!(category_label("created"), "생성");
+        assert_eq!(category_label("unknown"), "unknown");
+    }
+
+    /// 내가 작성한 댓글(author==ME). ADF 본문 포함.
+    fn my_comment_c() -> Value {
+        json!({
+            "id": "8001",
+            "created": "2026-07-21T11:00:00.000+0900",
+            "author": { "accountId": ME, "displayName": "이지수" },
+            "body": {
+                "type": "doc", "version": 1,
+                "content": [{ "type": "paragraph", "content": [
+                    { "type": "text", "text": "내가 남긴 댓글" }
+                ]}]
+            }
+        })
+    }
+
+    // 17) include_my_comments=false → 내 댓글은 스킵(기존 동작), 타인 댓글만 기록
+    #[test]
+    fn classify_comments_skips_my_comment_when_off() {
+        let ev = classify_comments(
+            "APP-800", "APP", "제목",
+            &[my_comment_c(), plain_comment()], // 내 댓글 + 타인 댓글
+            since_all(), ME,
+            true,  // is_app_project
+            false, // include_my_comments OFF
+        );
+        assert_eq!(ev.len(), 1); // 내 댓글 제외 → 타인 댓글 1건
+        assert_eq!(ev[0].category, "comment");
+        assert_eq!(ev[0].event_uid, "APP-800:cm:5002"); // plain_comment id
+    }
+
+    // 18) include_my_comments=true → 내 댓글도 comment 이벤트로 생성
+    #[test]
+    fn classify_comments_includes_my_comment_when_on() {
+        let ev = classify_comments(
+            "APP-800", "APP", "제목",
+            &[my_comment_c()],
+            since_all(), ME,
+            true, // is_app_project
+            true, // include_my_comments ON
+        );
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0].category, "comment");
+        assert_eq!(ev[0].event_uid, "APP-800:cm:8001");
+        assert_eq!(ev[0].actor, "이지수");
+        assert!(ev[0].detail.contains("내가 남긴 댓글"));
     }
 }

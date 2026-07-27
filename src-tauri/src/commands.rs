@@ -1095,12 +1095,26 @@ pub fn jira_poll_now(app: tauri::AppHandle) -> Result<PollResult, String> {
     Ok(crate::jira::poll_now(&app))
 }
 
-/// 알림 피드 조회 (event_at 내림차순). only_unread·category(전체=None/"all") 필터 + 페이징.
+/// LIKE 패턴 특수문자(%, _, \)를 ESCAPE '\' 기준으로 이스케이프한다.
+/// 사용자 검색어를 `%{escape_like(q)}%` 형태로 감싸 부분일치 검색에 사용.
+fn escape_like(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        if ch == '\\' || ch == '%' || ch == '_' {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// 알림 피드 조회 (event_at 내림차순). only_unread·category(전체=None/"all")·query 필터 + 페이징.
 #[tauri::command]
 pub fn get_jira_notifications(
     state: State<AppState>,
     only_unread: bool,
     category: Option<String>,
+    query: Option<String>,
     limit: i64,
     offset: i64,
 ) -> Result<Vec<JiraNotificationRow>, String> {
@@ -1117,6 +1131,16 @@ pub fn get_jira_notifications(
     if let Some(c) = &cat {
         binds.push(SqlValue::Text(c.clone()));
         where_sql.push_str(&format!(" AND category=?{}", binds.len()));
+    }
+    // 검색어(트림 후 비어있지 않으면): issue_key·summary·detail·actor 부분일치.
+    if let Some(q) = query.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+        binds.push(SqlValue::Text(format!("%{}%", escape_like(q))));
+        let p = binds.len();
+        where_sql.push_str(&format!(
+            " AND (issue_key LIKE ?{p} ESCAPE '\\' OR summary LIKE ?{p} ESCAPE '\\' \
+             OR detail LIKE ?{p} ESCAPE '\\' OR actor LIKE ?{p} ESCAPE '\\')",
+            p = p
+        ));
     }
     binds.push(SqlValue::Integer(limit));
     let limit_pos = binds.len();
@@ -1312,5 +1336,17 @@ mod tests {
         assert!(out.contains("## 건너뜀"));
         assert!(!out.contains("## 완료"));
         assert!(!out.contains("## 미수행"));
+    }
+
+    // 6) LIKE 이스케이프: %, _, \ 는 앞에 \ 를 붙이고 일반 문자는 그대로 둔다.
+    #[test]
+    fn escape_like_escapes_wildcards() {
+        assert_eq!(escape_like("abc"), "abc");
+        assert_eq!(escape_like("50%"), "50\\%");
+        assert_eq!(escape_like("a_b"), "a\\_b");
+        assert_eq!(escape_like("c:\\dir"), "c:\\\\dir");
+        assert_eq!(escape_like("%_\\"), "\\%\\_\\\\");
+        // 한글·일반 문자는 이스케이프하지 않음
+        assert_eq!(escape_like("로그인"), "로그인");
     }
 }

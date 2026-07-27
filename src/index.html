@@ -93,6 +93,7 @@
   </div>
 
   <div class="jira-toolbar" id="jira-toolbar" style="display:none">
+    <input type="search" id="jira-search" class="jira-input jira-search" placeholder="이슈키·내용·작성자 검색">
     <div class="jira-filters" id="jira-filters"></div>
     <label class="jira-unread-toggle"><input type="checkbox" id="jira-only-unread"> 안읽음만</label>
   </div>
@@ -229,6 +230,14 @@
       <div class="set-row">
         <div><div class="set-label">담당자가 나인 이슈만<span class="info-tip" tabindex="0" role="button" aria-label="도움말"><span class="info-pop">ON이면 생성·상태 변경·필드 변경 알림을 현재 담당자가 나인 이슈로 제한합니다. 담당자 변경·댓글·멘션·내 담당 지정은 영향받지 않습니다.</span></span></div><div class="set-sub">생성·상태 변경·필드 변경에만 적용 (댓글·멘션·담당 지정은 항상 수신)</div></div>
         <label class="switch"><input type="checkbox" id="jira-my-issues-only"><span class="slider"></span></label>
+      </div>
+      <div class="set-row">
+        <div><div class="set-label">윈도우 알림(토스트)<span class="info-tip" tabindex="0" role="button" aria-label="도움말"><span class="info-pop">새 Jira 알림을 받으면 윈도우 토스트로 알려줍니다. 끄면 피드·트레이 배지에만 반영됩니다.</span></span></div><div class="set-sub">새 알림 수신 시 바탕화면 토스트 표시</div></div>
+        <label class="switch"><input type="checkbox" id="jira-toast"><span class="slider"></span></label>
+      </div>
+      <div class="set-row">
+        <div><div class="set-label">내 댓글도 알림<span class="info-tip" tabindex="0" role="button" aria-label="도움말"><span class="info-pop">ON이면 내가 작성한 댓글도 피드·토스트에 표시됩니다.</span></span></div><div class="set-sub">내가 남긴 댓글도 피드·토스트에 포함</div></div>
+        <label class="switch"><input type="checkbox" id="jira-include-my-comments"><span class="slider"></span></label>
       </div>
       <div class="set-row">
         <div><div class="set-label">알림 받을 분류<span class="info-tip" tabindex="0" role="button" aria-label="분류 설명"><span class="info-pop">

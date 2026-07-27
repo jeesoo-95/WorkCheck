@@ -154,6 +154,10 @@ fn seed(conn: &Connection) -> Result<(), String> {
         ("jira_categories", "created,assignee,comment,mention,assigned"), // 기본: 상태·필드 변경 제외
         // 담당자가 나인 이슈만(생성·상태·필드 분류에만 적용). 기본 ON.
         ("jira_my_issues_only", "1"),
+        // 새 알림 수신 시 윈도우 토스트 발송. 기본 ON.
+        ("jira_toast", "1"),
+        // 내가 작성한 댓글도 피드·토스트에 포함. 기본 ON.
+        ("jira_include_my_comments", "1"),
         ("jira_poll_secs", "180"),                        // 폴링 주기(초, 최소 60)
         ("jira_last_poll", ""),                           // 마지막 폴링 시각(RFC3339)
         ("jira_last_error", ""),                          // 마지막 폴링 오류(성공 시 빈값)

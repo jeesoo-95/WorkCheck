@@ -24,7 +24,7 @@ fn parse_notify_time(s: &str) -> NaiveTime {
 }
 
 /// 토스트 발송
-fn toast(app: &AppHandle, title: &str, body: &str) {
+pub(crate) fn toast(app: &AppHandle, title: &str, body: &str) {
     let _ = app
         .notification()
         .builder()

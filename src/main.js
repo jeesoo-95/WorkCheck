@@ -773,6 +773,7 @@ const JIRA_CAT_LABEL = { created: '생성', status: '상태', assignee: '담당�
 
 let jiraFilter = 'all';      // 현재 카테고리 필터
 let jiraOnlyUnread = false;  // 안읽음만 토글
+let jiraQuery = '';          // 피드 검색어 (이슈키·내용·작성자 부분일치)
 let jiraBaseUrl = '';        // 행 클릭 시 브라우저 열기용 (loadJira 에서 갱신)
 
 // 상대 시각 표기 (RFC3339 → "방금/N분 전/N시간 전/N일 전/MM/DD")
@@ -855,6 +856,9 @@ async function loadJira() {
   actions.style.display = '';
   renderJiraFilters();
   document.getElementById('jira-only-unread').checked = jiraOnlyUnread;
+  // 검색어 입력값 동기화 (커서 튐 방지 위해 다를 때만 반영)
+  const searchBox = document.getElementById('jira-search');
+  if (searchBox && searchBox.value !== jiraQuery) searchBox.value = jiraQuery;
 
   // 상태줄: 마지막 폴링·오류
   if (map.jira_last_error) {
@@ -871,6 +875,7 @@ async function loadJira() {
     rows = await invoke('get_jira_notifications', {
       onlyUnread: jiraOnlyUnread,
       category: jiraFilter,
+      query: jiraQuery,
       limit: 50,
       offset: 0,
     });
@@ -878,7 +883,8 @@ async function loadJira() {
   } catch (e) { showError(e.message || e, loadJira); return; }
 
   if (!rows.length) {
-    feed.innerHTML = '<div class="empty">표시할 알림이 없습니다.</div>';
+    const emptyMsg = jiraQuery.trim() ? '검색 결과 없음' : '표시할 알림이 없습니다.';
+    feed.innerHTML = `<div class="empty">${emptyMsg}</div>`;
   } else {
     feed.innerHTML = rows.map(jiraRowHtml).join('');
     feed.querySelectorAll('.jira-item').forEach(item => {
@@ -925,6 +931,24 @@ document.getElementById('jira-only-unread').addEventListener('change', e => {
   jiraOnlyUnread = e.target.checked;
   loadJira();
 });
+// 피드 검색 (입력 디바운스 250ms → loadJira 재조회). type=search 의 X 클릭도 input 이벤트로 처리.
+let jiraSearchTimer = null;
+const jiraSearchEl = document.getElementById('jira-search');
+jiraSearchEl.addEventListener('input', e => {
+  jiraQuery = e.target.value;
+  clearTimeout(jiraSearchTimer);
+  jiraSearchTimer = setTimeout(loadJira, 250);
+});
+// Esc → 검색어 비우고 즉시 전체 복귀
+jiraSearchEl.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && jiraQuery) {
+    e.preventDefault();
+    jiraQuery = '';
+    e.target.value = '';
+    clearTimeout(jiraSearchTimer);
+    loadJira();
+  }
+});
 
 // jira-updated 이벤트: 백엔드 폴링이 새 알림을 넣으면 배지·피드 갱신
 function wireJiraEvent() {
@@ -969,6 +993,10 @@ async function loadSettings() {
   document.getElementById('jira-poll-secs').value = map.jira_poll_secs || '180';
   // 담당자가 나인 이슈만 (값 없으면 기본 ON)
   document.getElementById('jira-my-issues-only').checked = map.jira_my_issues_only !== '0';
+  // 윈도우 토스트 알림 (값 없으면 기본 ON)
+  document.getElementById('jira-toast').checked = map.jira_toast !== '0';
+  // 내 댓글도 알림 (값 없으면 기본 ON)
+  document.getElementById('jira-include-my-comments').checked = map.jira_include_my_comments !== '0';
   // 알림 받을 분류 (CSV, 값 없음=전부 on). 체크 상태로 반영.
   const catSet = map.jira_categories
     ? new Set(map.jira_categories.split(',').map(s => s.trim()).filter(Boolean))
@@ -1096,6 +1124,12 @@ document.getElementById('jira-api-token').addEventListener('change', e => {
 // 담당자가 나인 이슈만 토글 (created·status·field 분류에만 적용)
 document.getElementById('jira-my-issues-only').addEventListener('change', e =>
   saveSetting('jira_my_issues_only', e.target.checked ? '1' : '0'));
+// 윈도우 토스트 알림 토글
+document.getElementById('jira-toast').addEventListener('change', e =>
+  saveSetting('jira_toast', e.target.checked ? '1' : '0'));
+// 내 댓글도 알림 토글
+document.getElementById('jira-include-my-comments').addEventListener('change', e =>
+  saveSetting('jira_include_my_comments', e.target.checked ? '1' : '0'));
 // 알림 받을 분류 토글 → 체크된 것만 CSV 로 저장(전부 해제=빈값=백엔드에서 전부 on).
 document.querySelectorAll('.jira-cat').forEach(cb => {
   cb.addEventListener('change', () => {
