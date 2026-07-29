@@ -1114,6 +1114,7 @@ pub fn get_jira_notifications(
     state: State<AppState>,
     only_unread: bool,
     category: Option<String>,
+    project: Option<String>,
     query: Option<String>,
     limit: i64,
     offset: i64,
@@ -1121,8 +1122,9 @@ pub fn get_jira_notifications(
     use rusqlite::types::Value as SqlValue;
     let conn = state.db.lock().map_err(e2s)?;
 
-    // 필터를 위치 바인딩으로 동적 구성 (category 는 "all"/빈값이면 미적용)
+    // 필터를 위치 바인딩으로 동적 구성 (category·project 는 "all"/빈값이면 미적용)
     let cat = category.filter(|c| c != "all" && !c.is_empty());
+    let proj = project.filter(|p| p != "all" && !p.is_empty());
     let mut where_sql = String::from(" WHERE 1=1");
     let mut binds: Vec<SqlValue> = Vec::new();
     if only_unread {
@@ -1131,6 +1133,10 @@ pub fn get_jira_notifications(
     if let Some(c) = &cat {
         binds.push(SqlValue::Text(c.clone()));
         where_sql.push_str(&format!(" AND category=?{}", binds.len()));
+    }
+    if let Some(p) = &proj {
+        binds.push(SqlValue::Text(p.clone()));
+        where_sql.push_str(&format!(" AND project_key=?{}", binds.len()));
     }
     // 검색어(트림 후 비어있지 않으면): issue_key·summary·detail·actor 부분일치.
     if let Some(q) = query.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
@@ -1211,6 +1217,65 @@ pub fn mark_all_jira_read(app: tauri::AppHandle, state: State<AppState>) -> Resu
     }
     crate::tray::update_tooltip(&app);
     Ok(())
+}
+
+/// 알림 1건의 read 상태 UPDATE (커맨드에서 분리 — 단위 테스트 대상). 갱신된 행 수 반환.
+/// 없는 id 면 0행(Err 아님).
+fn set_jira_read_db(conn: &Connection, id: i64, read: bool) -> Result<usize, String> {
+    conn.execute(
+        "UPDATE JiraNotification SET read=?1 WHERE id=?2",
+        params![read, id],
+    )
+    .map_err(e2s)
+}
+
+/// 알림 1건 읽음/안읽음 설정 (피드 행의 상태 점 버튼).
+/// read=true → 읽음, false → 안읽음. 갱신 후 트레이 툴팁(안읽음 수)을 다시 계산한다.
+/// 없는 id 는 0행 갱신으로 조용히 통과 — mark_jira_read 와 동일한 관용.
+#[tauri::command]
+pub fn set_jira_read(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    id: i64,
+    read: bool,
+) -> Result<(), String> {
+    {
+        let conn = state.db.lock().map_err(e2s)?;
+        set_jira_read_db(&conn, id, read)?;
+    }
+    crate::tray::update_tooltip(&app);
+    Ok(())
+}
+
+/// 프로젝트별 안읽음/전체 수 집계 (project_key 오름차순). 커맨드에서 분리 — 단위 테스트 대상.
+fn jira_project_counts_db(conn: &Connection) -> Result<Vec<JiraProjectCount>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT project_key, SUM(CASE WHEN read=0 THEN 1 ELSE 0 END) AS unread, \
+             COUNT(*) AS total FROM JiraNotification GROUP BY project_key ORDER BY project_key",
+        )
+        .map_err(e2s)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(JiraProjectCount {
+                project_key: r.get(0)?,
+                unread: r.get(1)?,
+                total: r.get(2)?,
+            })
+        })
+        .map_err(e2s)?;
+    let mut v = Vec::new();
+    for row in rows {
+        v.push(row.map_err(e2s)?);
+    }
+    Ok(v)
+}
+
+/// 프로젝트별 알림 수 (프로젝트 칩 줄·배지용).
+#[tauri::command]
+pub fn get_jira_project_counts(state: State<AppState>) -> Result<Vec<JiraProjectCount>, String> {
+    let conn = state.db.lock().map_err(e2s)?;
+    jira_project_counts_db(&conn)
 }
 
 // ── 단위 테스트 ──────────────────────────────────────────
@@ -1348,5 +1413,64 @@ mod tests {
         assert_eq!(escape_like("%_\\"), "\\%\\_\\\\");
         // 한글·일반 문자는 이스케이프하지 않음
         assert_eq!(escape_like("로그인"), "로그인");
+    }
+
+    // 7) set_jira_read_db: 안읽음↔읽음 토글, 없는 id 는 0행(Err 아님).
+    #[test]
+    fn set_jira_read_toggles_read_flag() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrate_for_test(&conn);
+        conn.execute(
+            "INSERT INTO JiraNotification \
+             (event_uid, issue_key, project_key, category, summary, detail, actor, event_at, fetched_at, read) \
+             VALUES('u1','APP-1','APP','comment','s','d','a','2026-07-21T10:00:00+09:00','2026-07-21 10:00:00',0)",
+            [],
+        )
+        .unwrap();
+        let id: i64 = conn
+            .query_row("SELECT id FROM JiraNotification WHERE event_uid='u1'", [], |r| r.get(0))
+            .unwrap();
+        let read_of = |c: &Connection, id: i64| -> i64 {
+            c.query_row("SELECT read FROM JiraNotification WHERE id=?1", params![id], |r| r.get(0))
+                .unwrap()
+        };
+        // 안읽음(0) → 읽음(1)
+        assert_eq!(set_jira_read_db(&conn, id, true).unwrap(), 1);
+        assert_eq!(read_of(&conn, id), 1);
+        // 읽음(1) → 안읽음(0)
+        assert_eq!(set_jira_read_db(&conn, id, false).unwrap(), 1);
+        assert_eq!(read_of(&conn, id), 0);
+        // 없는 id → 0행 갱신, Err 아님
+        assert_eq!(set_jira_read_db(&conn, 99999, true).unwrap(), 0);
+    }
+
+    // 8) jira_project_counts_db: 프로젝트별 unread/total 집계 + project_key 오름차순.
+    #[test]
+    fn jira_project_counts_aggregates_per_project() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrate_for_test(&conn);
+        // APP: 3건(안읽음 2, 읽음 1) · AUTOPRJ: 2건(안읽음 1, 읽음 1)
+        let ins = |uid: &str, proj: &str, read: i64| {
+            conn.execute(
+                "INSERT INTO JiraNotification \
+                 (event_uid, issue_key, project_key, category, summary, detail, actor, event_at, fetched_at, read) \
+                 VALUES(?1, 'K-1', ?2, 'comment', 's', 'd', 'a', '2026-07-21T10:00:00+09:00', '2026-07-21 10:00:00', ?3)",
+                params![uid, proj, read],
+            )
+            .unwrap();
+        };
+        ins("a1", "APP", 0);
+        ins("a2", "APP", 0);
+        ins("a3", "APP", 1);
+        ins("b1", "AUTOPRJ", 0);
+        ins("b2", "AUTOPRJ", 1);
+
+        let counts = jira_project_counts_db(&conn).unwrap();
+        assert_eq!(counts.len(), 2);
+        // project_key 오름차순: APP → AUTOPRJ
+        assert_eq!(counts[0].project_key, "APP");
+        assert_eq!((counts[0].unread, counts[0].total), (2, 3));
+        assert_eq!(counts[1].project_key, "AUTOPRJ");
+        assert_eq!((counts[1].unread, counts[1].total), (1, 2));
     }
 }

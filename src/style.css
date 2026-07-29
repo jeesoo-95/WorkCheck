@@ -356,6 +356,15 @@ body{
 }
 .jchip:hover{border-color:var(--line-strong);color:var(--txt);}
 .jchip.active{background:var(--blue);color:#fff;border-color:var(--blue);font-weight:600;}
+/* 프로젝트 칩 줄 (검색 아래·분류 칩 위). 칩 룩은 .jchip 재사용, 안읽음 수 배지만 추가 */
+.jira-projects{display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex:1 1 100%;}
+.jchip-badge{
+  display:inline-block;margin-left:5px;min-width:16px;height:16px;line-height:16px;
+  padding:0 5px;border-radius:9px;vertical-align:middle;
+  background:var(--blue-soft);color:var(--blue);
+  font-size:10px;font-weight:700;text-align:center;
+}
+.jchip.active .jchip-badge{background:rgba(255,255,255,.24);color:#fff;}
 .jira-search{flex:1 1 100%;width:100%;max-width:none;box-sizing:border-box;}
 .jira-unread-toggle{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--txt-sub);cursor:pointer;white-space:nowrap;}
 .jira-unread-toggle input{width:auto;}
@@ -389,6 +398,15 @@ body{
 .jira-item-top .jsummary{font-size:13px;color:var(--txt);}
 .jira-item-detail{font-size:12px;color:var(--txt-sub);margin-top:3px;line-height:1.5;word-break:break-word;}
 .jira-item-meta{font-size:11px;color:var(--txt-faint);margin-top:4px;}
+/* 읽음 상태 점 버튼 — 안읽음=파란 채운 점, 읽음=회색 빈 점(테두리). 행 클릭과 분리 */
+.jread-dot{
+  flex-shrink:0;align-self:flex-start;width:12px;height:12px;margin-top:2px;padding:0;
+  border-radius:50%;border:1.5px solid var(--txt-faint);background:transparent;
+  cursor:pointer;transition:transform .12s,background-color .12s,border-color .12s;
+}
+.jread-dot.unread{background:var(--blue);border-color:var(--blue);}
+.jread-dot:hover{transform:scale(1.25);}
+.jread-dot:focus-visible{outline:2px solid var(--blue);outline-offset:2px;}
 /* 설정 탭 Jira 입력 */
 .jira-input{
   border:1px solid var(--line);border-radius:6px;padding:5px 8px;font-family:inherit;font-size:13px;

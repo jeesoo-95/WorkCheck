@@ -772,6 +772,7 @@ const JIRA_CATS = [
 const JIRA_CAT_LABEL = { created: '생성', status: '상태', assignee: '담당자', field: '필드', comment: '댓글', mention: '멘션', assigned: '내 담당' };
 
 let jiraFilter = 'all';      // 현재 카테고리 필터
+let jiraProject = 'all';     // 현재 프로젝트 필터 ('all'=전체)
 let jiraOnlyUnread = false;  // 안읽음만 토글
 let jiraQuery = '';          // 피드 검색어 (이슈키·내용·작성자 부분일치)
 let jiraBaseUrl = '';        // 행 클릭 시 브라우저 열기용 (loadJira 에서 갱신)
@@ -810,6 +811,30 @@ function renderJiraFilters() {
   });
 }
 
+// 프로젝트 칩 렌더 + 클릭 바인딩. counts: [{projectKey, unread, total}] (project_key 오름차순).
+// - [전체] + 프로젝트별 칩. 배지 = 프로젝트별 안읽음 수(0이면 배지 숨김, 칩은 표시).
+// - 프로젝트가 1개 이하면 칩 줄 자체를 숨겨 공간 절약.
+// - 선택된 프로젝트가 목록에서 사라지면 'all' 로 폴백(호출부에서 project 전달 전에 반영됨).
+function renderJiraProjects(counts) {
+  const wrap = document.getElementById('jira-projects');
+  if (!wrap) return;
+  const keys = counts.map(c => c.projectKey);
+  if (jiraProject !== 'all' && !keys.includes(jiraProject)) jiraProject = 'all';
+  // 프로젝트 1개 이하 → 칩 줄 숨김 (필터 의미 없음)
+  if (counts.length <= 1) { wrap.style.display = 'none'; wrap.innerHTML = ''; return; }
+  wrap.style.display = '';
+  const chips = [{ k: 'all', label: '전체', unread: 0 }]
+    .concat(counts.map(c => ({ k: c.projectKey, label: c.projectKey, unread: c.unread })));
+  wrap.innerHTML = chips.map(c => {
+    const active = jiraProject === c.k ? ' active' : '';
+    const badge = (c.k !== 'all' && c.unread > 0) ? `<span class="jchip-badge">${c.unread}</span>` : '';
+    return `<button class="jchip${active}" data-proj="${esc(c.k)}" aria-pressed="${jiraProject === c.k}">${esc(c.label)}${badge}</button>`;
+  }).join('');
+  wrap.querySelectorAll('.jchip').forEach(chip => {
+    chip.addEventListener('click', () => { jiraProject = chip.dataset.proj; loadJira(); });
+  });
+}
+
 // 알림 행 HTML
 function jiraRowHtml(n) {
   const unread = n.read === 0;
@@ -820,6 +845,7 @@ function jiraRowHtml(n) {
       <div class="jira-item-detail">${esc(n.detail)}</div>
       <div class="jira-item-meta">${esc(n.actor)} · ${relTime(n.eventAt)}</div>
     </div>
+    <button type="button" class="jread-dot${unread ? ' unread' : ''}" data-read="${unread ? '0' : '1'}" title="${unread ? '읽음 처리' : '안읽음 처리'}" aria-label="${unread ? '읽음 처리' : '안읽음 처리'}"></button>
   </div>`;
 }
 
@@ -869,12 +895,20 @@ async function loadJira() {
     status.textContent = '아직 폴링 이력이 없습니다.';
   }
 
+  // 프로젝트 칩: 프로젝트별 안읽음/전체 수를 조회해 동적 렌더 (실패해도 피드는 동작).
+  // renderJiraProjects 내부에서 사라진 선택 프로젝트를 'all' 로 폴백하므로 피드 조회보다 먼저 호출.
+  let projCounts = [];
+  try { projCounts = await invoke('get_jira_project_counts'); }
+  catch { /* 조용히 무시 — 프로젝트 칩 없이도 피드는 표시 */ }
+  renderJiraProjects(projCounts);
+
   // 피드 조회 (event_at DESC, 50개)
   let rows;
   try {
     rows = await invoke('get_jira_notifications', {
       onlyUnread: jiraOnlyUnread,
       category: jiraFilter,
+      project: jiraProject,
       query: jiraQuery,
       limit: 50,
       offset: 0,
@@ -891,9 +925,24 @@ async function loadJira() {
       const open = () => openJiraItem(item);
       item.addEventListener('click', open);
       item.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+      // 상태 점 버튼: 행 클릭(브라우저 열기)과 분리해 read 만 토글
+      const dot = item.querySelector('.jread-dot');
+      dot?.addEventListener('click', e => { e.stopPropagation(); toggleJiraRead(item, dot); });
     });
   }
   updateJiraBadge();
+}
+
+// 상태 점 버튼 → read 토글. data-read '0'(안읽음)이면 읽음으로, '1'(읽음)이면 안읽음으로.
+// 토글 후 loadJira 재호출로 피드·배지 갱신(안읽음만 필터 시 읽은 행은 목록에서 빠짐).
+async function toggleJiraRead(item, dot) {
+  const id = Number(item.dataset.id);
+  const makeRead = dot.dataset.read === '0';
+  try {
+    await invoke('set_jira_read', { id, read: makeRead });
+    clearError();
+  } catch (e) { showError(e.message || e, null); return; }
+  loadJira();
 }
 
 // 행 클릭 → 읽음 처리 + 브라우저로 이슈 열기

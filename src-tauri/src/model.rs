@@ -163,3 +163,12 @@ pub struct JiraNotificationRow {
     pub fetched_at: String,
     pub read: i64,
 }
+
+/// 프로젝트별 알림 수 (get_jira_project_counts). 프로젝트 칩·배지용.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JiraProjectCount {
+    pub project_key: String,
+    pub unread: i64,
+    pub total: i64,
+}
