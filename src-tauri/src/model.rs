@@ -45,13 +45,15 @@ pub struct CheckInfo {
     pub memo: Option<String>,
 }
 
-/// list_tasks 응답 항목: Task 전체 필드 + doneOnce(1회성 완료 여부).
-/// DB 로딩용 Task 는 그대로 두고, flatten 으로 응답에만 doneOnce 를 덧붙인다.
+/// list_tasks 응답 항목: Task 전체 필드 + ruleLabel/doneOnce.
+/// DB 로딩용 Task 는 그대로 두고, flatten 으로 응답에만 파생 필드를 덧붙인다.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskListItem {
     #[serde(flatten)]
     pub task: Task,
+    /// "매주 · 금" 등 표시용 라벨 (TaskOccurrence.rule_label 과 동일 규칙)
+    pub rule_label: String,
     /// recur_type=="once" 이고 지정 기한일에 체크가 있으면 true. 그 외 주기는 항상 false.
     pub done_once: bool,
 }
@@ -126,6 +128,17 @@ pub struct Stats {
     pub week_rate: f64,
     pub quarter_rate: f64,
     pub heatmap: Vec<HeatCell>,
+}
+
+/// 주기 미리보기 응답 (preview_recur).
+/// summary=요약 문장, next=다음 3회 기한일("YYYY-MM-DD"),
+/// error=규칙이 아무 날도 만들지 못할 때의 안내 문구(정상이면 None).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecurPreview {
+    pub summary: String,
+    pub next: Vec<String>,
+    pub error: Option<String>,
 }
 
 // ── M4: Jira 알림 ─────────────────────────────────────────

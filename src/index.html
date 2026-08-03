@@ -310,45 +310,142 @@
         </div>
       </div>
 
-      <!-- 주기별 파라미터 -->
-      <div class="field" id="p-once" style="display:none">
-        <label for="f-once-date">기한일</label>
-        <input type="date" id="f-once-date">
-      </div>
-      <div class="field" id="p-daily">
-        <label><input type="checkbox" id="f-weekdays-only" style="width:auto;margin-right:6px"> 평일만 (주말·공휴일 제외)</label>
-      </div>
-      <div class="field" id="p-weekly" style="display:none">
-        <label for="f-weekday">요일</label>
-        <select id="f-weekday">
-          <option value="0">일요일</option><option value="1">월요일</option>
-          <option value="2">화요일</option><option value="3">수요일</option>
-          <option value="4">목요일</option><option value="5">금요일</option>
-          <option value="6">토요일</option>
-        </select>
-      </div>
-      <div class="field" id="p-monthly" style="display:none">
-        <label for="f-month-day">며칠 (없는 날짜는 말일로 처리)</label>
-        <input type="number" id="f-month-day" min="1" max="31" value="1">
-      </div>
-      <div class="field-row" id="p-quarterly" style="display:none">
-        <div class="field">
-          <label for="f-moq">분기 내 달</label>
-          <select id="f-moq"><option value="1">첫째 달</option><option value="2">둘째 달</option><option value="3">셋째 달</option></select>
+      <!-- 주기별 파라미터 + 공통(공휴일·시작일·종료) + 미리보기 -->
+      <div id="recur-area">
+        <div class="field" id="p-once" style="display:none">
+          <label for="f-once-date">기한일</label>
+          <input type="date" id="f-once-date">
         </div>
-        <div class="field">
-          <label for="f-q-day">며칠</label>
-          <input type="number" id="f-q-day" min="1" max="31" value="1">
+
+        <!-- 매일: N일마다 (1 = 매일) -->
+        <div class="field" id="p-daily">
+          <label for="f-daily-interval">반복 간격</label>
+          <div class="num-unit">
+            <input type="number" id="f-daily-interval" min="1" max="365" value="1">
+            <span class="unit">일마다 <span class="unit-note">(1 = 매일)</span></span>
+          </div>
         </div>
-      </div>
-      <div class="field-row" id="p-yearly" style="display:none">
-        <div class="field">
-          <label for="f-y-month">월</label>
-          <input type="number" id="f-y-month" min="1" max="12" value="1">
+
+        <!-- 매주: 요일 복수 선택 + N주마다 -->
+        <div id="p-weekly" style="display:none">
+          <div class="field">
+            <label>요일 <span class="lbl-note">(복수 선택)</span></label>
+            <div class="wd-toggle" id="f-weekdays" role="group" aria-label="요일 선택">
+              <button type="button" class="wd" data-wd="0" aria-pressed="false">일</button>
+              <button type="button" class="wd" data-wd="1" aria-pressed="false">월</button>
+              <button type="button" class="wd" data-wd="2" aria-pressed="false">화</button>
+              <button type="button" class="wd" data-wd="3" aria-pressed="false">수</button>
+              <button type="button" class="wd" data-wd="4" aria-pressed="false">목</button>
+              <button type="button" class="wd" data-wd="5" aria-pressed="false">금</button>
+              <button type="button" class="wd" data-wd="6" aria-pressed="false">토</button>
+            </div>
+          </div>
+          <div class="field">
+            <label for="f-weekly-interval">반복 간격</label>
+            <div class="num-unit">
+              <input type="number" id="f-weekly-interval" min="1" max="52" value="1">
+              <span class="unit">주마다 <span class="unit-note">(1 = 매주, 2 = 격주)</span></span>
+            </div>
+          </div>
         </div>
-        <div class="field">
-          <label for="f-y-day">일</label>
-          <input type="number" id="f-y-day" min="1" max="31" value="1">
+
+        <!-- 매월: 날짜 지정 / 요일 지정 -->
+        <div id="p-monthly" style="display:none">
+          <div class="field">
+            <label>지정 방식</label>
+            <div class="radio-row" role="radiogroup" aria-label="매월 지정 방식">
+              <label class="radio-item"><input type="radio" name="f-month-mode" value="days" checked> 날짜 지정</label>
+              <label class="radio-item"><input type="radio" name="f-month-mode" value="nth"> 요일 지정</label>
+            </div>
+          </div>
+          <div class="field" id="p-month-days">
+            <label>일자 <span class="lbl-note">(복수 선택 · 없는 날짜는 말일로 처리)</span></label>
+            <div class="day-chips" id="f-month-days" role="group" aria-label="일자 선택"></div>
+            <label class="check-inline"><input type="checkbox" id="f-month-lastday"> 말일</label>
+          </div>
+          <div class="field-row" id="p-month-nth" style="display:none">
+            <div class="field">
+              <label for="f-month-nth">주차</label>
+              <select id="f-month-nth">
+                <option value="1">첫째</option><option value="2">둘째</option>
+                <option value="3">셋째</option><option value="4">넷째</option>
+                <option value="-1">마지막</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="f-month-weekday">요일</label>
+              <select id="f-month-weekday">
+                <option value="0">일요일</option><option value="1">월요일</option>
+                <option value="2">화요일</option><option value="3">수요일</option>
+                <option value="4">목요일</option><option value="5">금요일</option>
+                <option value="6">토요일</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="field-row" id="p-quarterly" style="display:none">
+          <div class="field">
+            <label for="f-moq">분기 내 달</label>
+            <select id="f-moq"><option value="1">첫째 달</option><option value="2">둘째 달</option><option value="3">셋째 달</option></select>
+          </div>
+          <div class="field">
+            <label for="f-q-day">며칠</label>
+            <input type="number" id="f-q-day" min="1" max="31" value="1">
+          </div>
+        </div>
+        <div class="field-row" id="p-yearly" style="display:none">
+          <div class="field">
+            <label for="f-y-month">월</label>
+            <input type="number" id="f-y-month" min="1" max="12" value="1">
+          </div>
+          <div class="field">
+            <label for="f-y-day">일</label>
+            <input type="number" id="f-y-day" min="1" max="31" value="1">
+          </div>
+        </div>
+
+        <!-- 공통: 공휴일 처리 · 시작일(간격 기준) · 종료 조건 -->
+        <div class="recur-common">
+          <div class="field-row">
+            <div class="field">
+              <label for="f-holiday">공휴일 처리</label>
+              <select id="f-holiday">
+                <option value="none">그대로</option>
+                <option value="skip">건너뜀</option>
+                <option value="before">직전 영업일로</option>
+                <option value="after">다음 영업일로</option>
+              </select>
+            </div>
+            <div class="field" id="p-start" style="display:none">
+              <label for="f-recur-start">시작일 <span class="lbl-note">(간격 기준)</span></label>
+              <input type="date" id="f-recur-start">
+            </div>
+          </div>
+          <div class="field-row" id="p-end">
+            <div class="field">
+              <label for="f-end-mode">종료 조건</label>
+              <select id="f-end-mode">
+                <option value="none">없음</option>
+                <option value="until">날짜 지정</option>
+                <option value="count">N회</option>
+              </select>
+            </div>
+            <div class="field" id="p-until" style="display:none">
+              <label for="f-until">종료일</label>
+              <input type="date" id="f-until">
+            </div>
+            <div class="field" id="p-count" style="display:none">
+              <label for="f-count">횟수</label>
+              <input type="number" id="f-count" min="1" max="999" value="10">
+            </div>
+          </div>
+        </div>
+
+        <!-- 미리보기 (백엔드 preview_recur 결과를 그대로 표시) -->
+        <div class="recur-preview" id="recur-preview">
+          <div class="rp-summary" id="rp-summary"></div>
+          <div class="rp-next" id="rp-next"></div>
         </div>
       </div>
 

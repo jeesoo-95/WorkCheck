@@ -2,6 +2,8 @@
 // 백엔드 통신: window.__TAURI__.core.invoke (tauri.conf: withGlobalTauri=true)
 
 const WEEKDAY_KO = ['일', '월', '화', '수', '목', '금', '토'];
+/// 공휴일 처리 값 (recur.rs parse_holiday 와 동일)
+const HOLIDAY_VALUES = ['none', 'skip', 'before', 'after'];
 
 // ── invoke 래퍼 (에러 배너 처리) ──────────────────────────
 function hasTauri() {
@@ -58,6 +60,11 @@ function fmtIso(d) {
   return `${d.getFullYear()}-${m}-${day}`;
 }
 function todayIso() { return fmtIso(new Date()); }
+// 1 이상 정수로 정규화. 값이 없거나 잘못되면 def.
+function intOr(v, def) {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 1 ? Math.trunc(n) : def;
+}
 function parseLinks(raw) {
   if (!raw) return [];
   try { const a = JSON.parse(raw); return Array.isArray(a) ? a : []; } catch { return []; }
@@ -468,7 +475,7 @@ function mTaskRow(t, done) {
   return `<div class="m-task${done ? ' done' : ''}" data-id="${t.id}"${drag}>
            <div class="task-name">${esc(t.name)}</div>
            ${priorityBadgeHtml(prio)}
-           <span class="rule">${esc(ruleLabelJs(t))}</span>
+           <span class="rule">${esc(t.ruleLabel)}</span>
            ${t.notifyTime ? `<span class="notify-note">🔔 ${esc(t.notifyTime)}</span>` : ''}
            ${t.remindBefore ? `<span class="badge remind">D-${t.remindBefore} 예고</span>` : ''}
            ${done ? '<span class="badge">완료</span>' : ''}
@@ -478,23 +485,13 @@ function mTaskRow(t, done) {
            </div>
          </div>`;
 }
-// 프론트 표시용 라벨 (백엔드 rule_label 과 동일 규칙)
-function ruleLabelJs(t) {
-  const p = safeParam(t.recurParam);
-  switch (t.recurType) {
-    case 'once': {
-      const dt = p.date ? new Date(p.date + 'T00:00:00') : null;
-      return dt ? `1회 · ${dt.getMonth() + 1}/${dt.getDate()}` : '1회';
-    }
-    case 'daily': return p.weekdaysOnly ? '매일 · 평일만' : '매일';
-    case 'weekly': return '매주 · ' + WEEKDAY_KO[p.weekday ?? 1];
-    case 'monthly': return '매월 · ' + (p.day ?? 1) + '일';
-    case 'quarterly': return '매분기 · ' + (p.monthOfQuarter ?? 1) + '번째 달 ' + (p.day ?? 1) + '일';
-    case 'yearly': return '매년 · ' + (p.month ?? 1) + '/' + (p.day ?? 1);
-    default: return t.recurType;
-  }
-}
 function safeParam(raw) { try { return raw ? JSON.parse(raw) : {}; } catch { return {}; } }
+// recur_param 의 공휴일 처리 값. holiday 키가 없으면 레거시 weekdaysOnly:true 를 skip 으로 읽는다.
+// (recur.rs parse_holiday 와 동일 — 알 수 없는 holiday 값은 none)
+function paramHoliday(p) {
+  if (p.holiday !== undefined) return HOLIDAY_VALUES.includes(p.holiday) ? p.holiday : 'none';
+  return p.weekdaysOnly ? 'skip' : 'none';
+}
 
 async function confirmDelete(task) {
   if (!confirm(`"${task.name}" 업무를 삭제할까요?\n체크 이력도 함께 삭제됩니다.`)) return;
@@ -504,14 +501,175 @@ async function confirmDelete(task) {
 
 // ── 모달 (추가/수정) ──────────────────────────────────────
 const modalBack = document.getElementById('modal-back');
+const RECUR_KINDS = ['once', 'daily', 'weekly', 'monthly', 'quarterly', 'yearly'];
+
+// 매월 '날짜 지정' 1~31 일자 칩 생성 (최초 1회)
+function buildMonthDayChips() {
+  const wrap = document.getElementById('f-month-days');
+  if (!wrap || wrap.childElementCount) return;
+  let html = '';
+  for (let d = 1; d <= 31; d++) {
+    html += `<button type="button" class="mday" data-day="${d}" aria-pressed="false">${d}</button>`;
+  }
+  wrap.innerHTML = html;
+}
+buildMonthDayChips();
+
+// 토글 버튼(요일·일자) 공통 처리 — 선택값 읽기/쓰기
+function toggleChip(btn) {
+  const on = btn.classList.toggle('on');
+  btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+}
+function chipValues(wrapId, attr) {
+  return Array.from(document.getElementById(wrapId).children)
+    .filter(b => b.classList.contains('on'))
+    .map(b => Number(b.dataset[attr]))
+    .sort((a, b) => a - b);
+}
+function setChipValues(wrapId, attr, values) {
+  const set = new Set((values || []).map(Number));
+  Array.from(document.getElementById(wrapId).children).forEach(b => {
+    const on = set.has(Number(b.dataset[attr]));
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+}
+// 숫자 입력값 (1 이상 정수, 아니면 def)
+function numField(id, def) { return intOr(document.getElementById(id).value, def); }
+// 매월 지정 방식 ('days' | 'nth')
+function monthMode() { return document.querySelector('input[name="f-month-mode"]:checked').value; }
+
+// 주기별 파라미터 블록 표시 전환
 function showParamFields(type) {
-  ['once', 'daily', 'weekly', 'monthly', 'quarterly', 'yearly'].forEach(k => {
+  RECUR_KINDS.forEach(k => {
     document.getElementById('p-' + k).style.display = (k === type) ? '' : 'none';
   });
   // 매일 업무는 사전 예고가 무의미 → "N일 전 미리 알림" 입력 숨김
   document.getElementById('f-remind-wrap').style.display = (type === 'daily') ? 'none' : '';
+  syncRecurFields();
 }
-document.getElementById('f-recur-type').addEventListener('change', e => showParamFields(e.target.value));
+
+// 선택 상태에 따른 조건부 입력 노출 (매월 모드 · 종료 상세 · 시작일)
+function syncRecurFields() {
+  const type = document.getElementById('f-recur-type').value;
+  // 매월: 날짜 지정 / 요일 지정
+  const mode = monthMode();
+  document.getElementById('p-month-days').style.display = (mode === 'days') ? '' : 'none';
+  document.getElementById('p-month-nth').style.display = (mode === 'nth') ? '' : 'none';
+  // 종료 조건 — 1회성은 무의미하므로 영역 자체를 숨긴다
+  const isOnce = (type === 'once');
+  const endMode = document.getElementById('f-end-mode').value;
+  document.getElementById('p-end').style.display = isOnce ? 'none' : '';
+  document.getElementById('p-until').style.display = (!isOnce && endMode === 'until') ? '' : 'none';
+  document.getElementById('p-count').style.display = (!isOnce && endMode === 'count') ? '' : 'none';
+  // 시작일 — 간격>1(매일·매주) 이거나 'N회' 종료일 때만 필요(백엔드가 위상·회차 기준으로 사용)
+  const interval = (type === 'daily') ? numField('f-daily-interval', 1)
+    : (type === 'weekly') ? numField('f-weekly-interval', 1) : 1;
+  const needStart = (interval > 1) || (!isOnce && endMode === 'count');
+  document.getElementById('p-start').style.display = needStart ? '' : 'none';
+  const startInput = document.getElementById('f-recur-start');
+  if (needStart && !startInput.value) startInput.value = todayIso(); // 기준일 없으면 간격·N회가 무시됨
+}
+
+// 주기 입력 변화 → 조건부 노출 갱신 + 미리보기(디바운스)
+function onRecurChanged() { syncRecurFields(); schedulePreview(); }
+const recurArea = document.getElementById('recur-area');
+recurArea.addEventListener('input', onRecurChanged);
+recurArea.addEventListener('change', onRecurChanged);
+recurArea.addEventListener('click', e => {
+  const btn = e.target.closest('.wd, .mday');
+  if (!btn) return;
+  toggleChip(btn);
+  onRecurChanged();
+});
+document.getElementById('f-recur-type').addEventListener('change', e => {
+  showParamFields(e.target.value);
+  schedulePreview();
+});
+
+// ── 주기 미리보기 (요약 문장 + 다음 발생일) ────────────────
+// 요약은 백엔드 rule_summary 문자열을 그대로 출력한다(라벨 단일 소스).
+let previewTimer = null;
+let previewSeq = 0;
+function schedulePreview() {
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(runPreview, 250); // 연속 입력은 마지막 것만 조회
+}
+function setSaveEnabled(ok) { document.getElementById('modal-save').disabled = !ok; }
+// "YYYY-MM-DD" → "MM-DD(요일)"
+function fmtPreviewDay(iso) {
+  const d = new Date(iso + 'T00:00:00');
+  return iso.slice(5) + (isNaN(d) ? '' : `(${WEEKDAY_KO[d.getDay()]})`);
+}
+async function runPreview() {
+  clearTimeout(previewTimer);
+  const type = document.getElementById('f-recur-type').value;
+  const card = document.getElementById('recur-preview');
+  const seq = ++previewSeq;
+  let r;
+  try {
+    r = await invoke('preview_recur', { recurType: type, recurParam: JSON.stringify(buildRecurParam(type)) });
+  } catch (e) {
+    if (seq !== previewSeq) return;
+    // 미리보기 호출 실패는 규칙 오류가 아니므로 저장은 막지 않는다
+    card.classList.add('err');
+    document.getElementById('rp-summary').textContent = '미리보기를 불러오지 못했습니다.';
+    document.getElementById('rp-next').textContent = String(e.message || e);
+    setSaveEnabled(true);
+    return;
+  }
+  if (seq !== previewSeq) return; // 늦게 도착한 이전 응답 무시
+  const next = r.next || [];
+  card.classList.toggle('err', !!r.error);
+  document.getElementById('rp-summary').textContent = r.summary || '';
+  document.getElementById('rp-next').textContent = r.error
+    ? r.error
+    : (next.length > 1 ? `다음 ${next.length}회: ` : '다음: ') + next.map(fmtPreviewDay).join(' · ');
+  setSaveEnabled(!r.error); // 생성 날짜가 0개면 저장 불가
+}
+
+// 레거시 recur_param 을 신규 형식으로 변환해 폼에 채운다 (저장은 항상 신규 형식)
+//   daily   {"weekdaysOnly":true} → 공휴일 처리 '건너뜀'
+//   weekly  {"weekday":5}         → 요일 토글 [금]
+//   monthly {"day":10}            → 날짜 지정 모드, 10일 선택
+function fillRecurForm(type, p) {
+  // 1회성
+  document.getElementById('f-once-date').value = p.date || todayIso();
+  // 매일 / 매주 — 간격
+  document.getElementById('f-daily-interval').value = intOr(p.interval, 1);
+  document.getElementById('f-weekly-interval').value = intOr(p.interval, 1);
+  // 매주 — 요일 (레거시 weekday 단일값 폴백)
+  let wds = Array.isArray(p.weekdays)
+    ? p.weekdays.map(Number).filter(w => w >= 0 && w <= 6)
+    : (type === 'weekly' && p.weekday != null ? [Number(p.weekday)] : []);
+  if (!wds.length) wds = [1]; // 미선택이면 월요일 기본
+  setChipValues('f-weekdays', 'wd', wds);
+  // 매월 — 지정 방식 + 일자/주차·요일 (레거시 day 단일값 폴백)
+  const isNth = (type === 'monthly' && p.mode === 'nth');
+  document.querySelector(`input[name="f-month-mode"][value="${isNth ? 'nth' : 'days'}"]`).checked = true;
+  let days = Array.isArray(p.days)
+    ? p.days.map(d => intOr(d, 1)).filter(d => d >= 1 && d <= 31)
+    : (type === 'monthly' && !isNth && p.day != null ? [intOr(p.day, 1)] : []);
+  if (!days.length) days = [1];
+  setChipValues('f-month-days', 'day', days);
+  document.getElementById('f-month-lastday').checked = !!p.lastDay;
+  // 주차 select 는 1~4·-1 만 제공 → 그 외 값은 '첫째'로
+  const nthRaw = isNth ? String(p.nth ?? 1) : '1';
+  document.getElementById('f-month-nth').value = ['1', '2', '3', '4', '-1'].includes(nthRaw) ? nthRaw : '1';
+  document.getElementById('f-month-weekday').value = String(isNth ? (p.weekday ?? 1) : 1);
+  // 매분기 / 연1회 (기존 유지)
+  document.getElementById('f-moq').value = String(p.monthOfQuarter ?? 1);
+  document.getElementById('f-q-day').value = p.day ?? 1;
+  document.getElementById('f-y-month').value = p.month ?? 1;
+  document.getElementById('f-y-day').value = p.day ?? 1;
+  // 공통 — 공휴일 처리 · 시작일 · 종료 조건
+  document.getElementById('f-holiday').value = paramHoliday(p);
+  document.getElementById('f-recur-start').value = typeof p.start === 'string' ? p.start : '';
+  // until 과 count 가 함께 있으면 select 특성상 until 우선
+  document.getElementById('f-end-mode').value = p.until ? 'until' : (p.count ? 'count' : 'none');
+  document.getElementById('f-until').value = typeof p.until === 'string' ? p.until : '';
+  document.getElementById('f-count').value = intOr(p.count, 10);
+}
 
 function openModal(task, presetType) {
   document.getElementById('modal-title').textContent = task ? '업무 수정' : '업무 추가';
@@ -525,16 +683,11 @@ function openModal(task, presetType) {
   // 신규 추가 시 presetType(빈 그룹 '+추가'가 넘긴 주기)이 있으면 그 주기로 시작
   const type = task ? task.recurType : (presetType || 'daily');
   document.getElementById('f-recur-type').value = type;
-  showParamFields(type);
   const p = task ? safeParam(task.recurParam) : {};
-  document.getElementById('f-once-date').value = p.date || todayIso();
-  document.getElementById('f-weekdays-only').checked = !!p.weekdaysOnly;
-  document.getElementById('f-weekday').value = String(p.weekday ?? 1);
-  document.getElementById('f-month-day').value = p.day ?? 1;
-  document.getElementById('f-moq').value = String(p.monthOfQuarter ?? 1);
-  document.getElementById('f-q-day').value = p.day ?? 1;
-  document.getElementById('f-y-month').value = p.month ?? 1;
-  document.getElementById('f-y-day').value = p.day ?? 1;
+  fillRecurForm(type, p);
+  showParamFields(type);   // 내부에서 syncRecurFields() 로 조건부 입력 노출까지 맞춘다
+  setSaveEnabled(true);    // 직전 모달의 오류 상태가 남지 않도록 초기화
+  runPreview();
 
   // 우선순위 (없으면 보통=1)
   document.getElementById('f-priority').value = String(task && task.priority != null ? task.priority : 1);
@@ -546,21 +699,64 @@ function openModal(task, presetType) {
   modalBack.classList.add('show');
   setTimeout(() => document.getElementById('f-name').focus(), 30);
 }
-function closeModal() { modalBack.classList.remove('show'); }
+function closeModal() { clearTimeout(previewTimer); modalBack.classList.remove('show'); }
 document.getElementById('btn-add-task').addEventListener('click', () => openModal(null));
 document.getElementById('modal-cancel').addEventListener('click', closeModal);
 modalBack.addEventListener('click', e => { if (e.target === modalBack) closeModal(); });
 
+// UI → recur_param JSON (항상 신규 형식으로 저장)
 function buildRecurParam(type) {
+  const p = {};
   switch (type) {
-    case 'once': return { date: document.getElementById('f-once-date').value };
-    case 'daily': return { weekdaysOnly: document.getElementById('f-weekdays-only').checked };
-    case 'weekly': return { weekday: Number(document.getElementById('f-weekday').value) };
-    case 'monthly': return { day: Number(document.getElementById('f-month-day').value) };
-    case 'quarterly': return { monthOfQuarter: Number(document.getElementById('f-moq').value), day: Number(document.getElementById('f-q-day').value) };
-    case 'yearly': return { month: Number(document.getElementById('f-y-month').value), day: Number(document.getElementById('f-y-day').value) };
-    default: return {};
+    case 'once':
+      p.date = document.getElementById('f-once-date').value;
+      break;
+    case 'daily':
+      p.interval = numField('f-daily-interval', 1);
+      break;
+    case 'weekly':
+      p.weekdays = chipValues('f-weekdays', 'wd');
+      p.interval = numField('f-weekly-interval', 1);
+      break;
+    case 'monthly':
+      if (monthMode() === 'nth') {
+        p.mode = 'nth';
+        p.nth = Number(document.getElementById('f-month-nth').value);
+        p.weekday = Number(document.getElementById('f-month-weekday').value);
+      } else {
+        p.mode = 'days';
+        p.days = chipValues('f-month-days', 'day');
+        p.lastDay = document.getElementById('f-month-lastday').checked;
+      }
+      break;
+    case 'quarterly':
+      p.monthOfQuarter = Number(document.getElementById('f-moq').value);
+      p.day = Number(document.getElementById('f-q-day').value);
+      break;
+    case 'yearly':
+      p.month = Number(document.getElementById('f-y-month').value);
+      p.day = Number(document.getElementById('f-y-day').value);
+      break;
+    default: return p;
   }
+  return applyCommonParam(p, type);
+}
+// 공통 필드(공휴일·시작일·종료) 부착. 화면에 노출된 입력만 반영한다.
+function applyCommonParam(p, type) {
+  p.holiday = document.getElementById('f-holiday').value;
+  if (document.getElementById('p-start').style.display !== 'none') {
+    const start = document.getElementById('f-recur-start').value;
+    if (start) p.start = start;
+  }
+  if (type === 'once') return p; // 1회성은 종료 조건 무의미
+  const endMode = document.getElementById('f-end-mode').value;
+  if (endMode === 'until') {
+    const until = document.getElementById('f-until').value;
+    if (until) p.until = until;
+  } else if (endMode === 'count') {
+    p.count = numField('f-count', 1);
+  }
+  return p;
 }
 function buildLinks() {
   const raw = document.getElementById('f-links').value.trim();

@@ -487,3 +487,52 @@ body{
   font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;
 }
 .btn-primary:hover{background:var(--blue-hover);}
+/* 규칙 오류(생성 날짜 0개)로 저장 불가 상태 */
+.btn-primary:disabled{opacity:.45;cursor:not-allowed;}
+.btn-primary:disabled:hover{background:var(--blue);}
+
+/* ── 주기 파라미터 (업무 모달) ─────────────────────────── */
+/* 라벨 옆 보조 설명 */
+.field label .lbl-note{font-weight:400;color:var(--txt-faint);}
+/* 숫자 입력 + 단위 텍스트 한 줄 */
+.num-unit{display:flex;align-items:center;gap:8px;}
+.field .num-unit input{width:82px;}
+.num-unit .unit{font-size:12.5px;color:var(--txt-sub);}
+.num-unit .unit-note{color:var(--txt-faint);font-size:11.5px;}
+/* 라디오 · 인라인 체크 (매월 지정 방식 · 말일) */
+.radio-row{display:flex;gap:16px;}
+.field .radio-item,.field .check-inline{
+  display:flex;align-items:center;gap:5px;margin-bottom:0;
+  font-size:12.5px;font-weight:400;color:var(--txt-sub);cursor:pointer;
+}
+.field .radio-item input,.field .check-inline input{width:auto;margin:0;}
+/* 요일 토글 (매주) */
+.wd-toggle{display:flex;gap:5px;}
+.wd-toggle .wd{
+  flex:1;border:1px solid var(--line);background:var(--card);color:var(--txt-sub);
+  border-radius:7px;padding:7px 0;font-size:12.5px;cursor:pointer;font-family:inherit;
+}
+.wd-toggle .wd:hover{border-color:var(--line-strong);color:var(--txt);}
+.wd-toggle .wd.on{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:700;}
+.wd-toggle .wd:focus-visible{outline:2px solid var(--blue);outline-offset:1px;}
+/* 일자 칩 1~31 (매월 · 날짜 지정) */
+.day-chips{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:8px;}
+.day-chips .mday{
+  border:1px solid var(--line);background:var(--card);color:var(--txt-sub);
+  border-radius:6px;padding:5px 0;font-size:11.5px;cursor:pointer;font-family:inherit;
+  font-variant-numeric:tabular-nums;
+}
+.day-chips .mday:hover{border-color:var(--line-strong);color:var(--txt);}
+.day-chips .mday.on{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:700;}
+.day-chips .mday:focus-visible{outline:2px solid var(--blue);outline-offset:1px;}
+/* 공통 영역(공휴일·시작일·종료) 구분 */
+.recur-common{border-top:1px dashed var(--line);padding-top:12px;}
+/* 미리보기 카드 — 요약 문장 + 다음 발생일 */
+.recur-preview{
+  background:var(--blue-soft);border:1px solid var(--line);border-radius:8px;
+  padding:9px 11px;margin-bottom:12px;line-height:1.55;
+}
+.recur-preview .rp-summary{font-size:12.5px;font-weight:700;color:var(--blue);}
+.recur-preview .rp-next{font-size:11.5px;color:var(--txt-sub);margin-top:3px;font-variant-numeric:tabular-nums;}
+.recur-preview.err{background:var(--red-soft);border-color:var(--red-border);}
+.recur-preview.err .rp-summary,.recur-preview.err .rp-next{color:var(--red);}

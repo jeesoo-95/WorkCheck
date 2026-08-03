@@ -130,6 +130,7 @@ pub fn run() {
             commands::set_check_status,
             commands::set_check_memo,
             commands::get_day_view,
+            commands::preview_recur,
             commands::list_tasks,
             commands::add_task,
             commands::update_task,

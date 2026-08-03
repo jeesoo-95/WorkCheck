@@ -592,6 +592,40 @@ pub fn get_day_view(state: State<AppState>, date: String) -> Result<Vec<TaskOccu
     Ok(out)
 }
 
+// ── 주기 미리보기 (업무 등록/수정 폼) ─────────────────────
+
+/// 주기 규칙 요약 + 다음 3회 기한일 미리보기.
+/// 오늘 ~ +2년 구간에서 실제 Holiday 테이블을 적용해 계산한다(등록 화면의 오등록 방지 장치).
+/// 생성되는 날짜가 하나도 없으면 next 는 비고 error 에 안내 문구를 담는다.
+#[tauri::command]
+pub fn preview_recur(
+    state: State<AppState>,
+    recur_type: String,
+    recur_param: String,
+) -> Result<RecurPreview, String> {
+    let conn = state.db.lock().map_err(e2s)?;
+    let holidays = load_holidays(&conn)?;
+    let today = Local::now().date_naive();
+    let occ = recur::occurrences_between(
+        &recur_type,
+        &recur_param,
+        today,
+        today + Duration::days(730), // +2년
+        &holidays,
+    );
+    let next: Vec<String> = occ.iter().take(3).map(|d| d.to_string()).collect();
+    let error = if next.is_empty() {
+        Some("선택한 조건으로 생성되는 날짜가 없습니다. 요일/일자 선택을 확인하세요.".to_string())
+    } else {
+        None
+    };
+    Ok(RecurPreview {
+        summary: recur::rule_summary(&recur_type, &recur_param),
+        next,
+        error,
+    })
+}
+
 // ── 업무 CRUD ────────────────────────────────────────────
 
 #[tauri::command]
@@ -603,7 +637,9 @@ pub fn list_tasks(state: State<AppState>) -> Result<Vec<TaskListItem>, String> {
         .into_iter()
         .map(|t| {
             let done_once = is_done_once(&t, &checks);
-            TaskListItem { task: t, done_once }
+            // 라벨은 백엔드가 만들어 내려준다 (프론트 재구현 금지 — make_occ 와 동일 규칙)
+            let rule_label = recur::rule_label(&t.recur_type, t.recur_param.as_deref().unwrap_or("{}"));
+            TaskListItem { task: t, rule_label, done_once }
         })
         .collect();
     Ok(items)
