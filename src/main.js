@@ -485,7 +485,13 @@ function mTaskRow(t, done) {
            </div>
          </div>`;
 }
-function safeParam(raw) { try { return raw ? JSON.parse(raw) : {}; } catch { return {}; } }
+// recur_param 파싱. 파싱 실패는 물론 "null"·"123" 같은 비객체 JSON 도 빈 객체로 (recur.rs param_value 와 동일)
+function safeParam(raw) {
+  try {
+    const v = raw ? JSON.parse(raw) : {};
+    return (typeof v === 'object' && v !== null) ? v : {};
+  } catch { return {}; }
+}
 // recur_param 의 공휴일 처리 값. holiday 키가 없으면 레거시 weekdaysOnly:true 를 skip 으로 읽는다.
 // (recur.rs parse_holiday 와 동일 — 알 수 없는 holiday 값은 none)
 function paramHoliday(p) {
