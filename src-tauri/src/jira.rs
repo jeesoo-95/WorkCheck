@@ -16,6 +16,13 @@
 // - APP 댓글이 멘션도 포함하면 mention 하나만 기록(comment 로 중복 기록하지 않음).
 // - actor 가 내 accountId 인 이벤트는 셀프 알림 방지로 제외한다.
 //   단, 댓글은 jira_include_my_comments=1(기본) 이면 내 댓글도 포함한다(APP 프로젝트 한정).
+//
+// 폴링 진도(since) 관리:
+// - 조회 스코프 3종(APP·멘션·담당지정)은 각자 독립된 "다음 since" 를 Setting 에 둔다
+//   (jira_ts_app / jira_ts_men / jira_ts_asg). 한 스코프가 캡(MAX_ISSUES)에 잘려도
+//   다른 스코프의 진도가 뒤로 끌려가지 않는다.
+// - jira_last_poll 은 "실제 폴링을 수행한 시각"(UI 표시 + poll_tick 경과시간 판정)만 담당한다.
+//   워터마크로 쓰지 않는다.
 
 use crate::commands::{self, AppState};
 use chrono::{DateTime, Duration, FixedOffset, Local};
@@ -33,9 +40,19 @@ const HTTP_TIMEOUT_SECS: u64 = 15;
 const OVERLAP_MINS: i64 = 5;
 /// 보존 정책 (기획서 5장): 읽음 + 90일 경과 알림 삭제
 const RETENTION_DAYS: i64 = 90;
+/// 최대 소급 한도 (기획서 4장 보강): 앱을 오래 껐다 켜도 조회 구간이 무한정 커지지 않도록
+/// 저장된 since 가 now − MAX_LOOKBACK_DAYS 보다 과거면 그 시각으로 클램프한다.
+const MAX_LOOKBACK_DAYS: i64 = 7;
 /// search maxResults / 페이징 안전 상한
 const PAGE_SIZE: i64 = 50;
 const MAX_ISSUES: usize = 500;
+
+/// 스코프별 "다음 since" Setting 키 (RFC3339). jira_last_poll 과 역할이 분리돼 있다.
+const KEY_TS_APP: &str = "jira_ts_app"; // APP 프로젝트 조회
+const KEY_TS_MEN: &str = "jira_ts_men"; // 非APP(멘션) 조회
+const KEY_TS_ASG: &str = "jira_ts_asg"; // 담당자 지정 조회
+/// 실제 폴링을 수행한 시각(UI 표시 · poll_tick 경과시간 판정 전용)
+const KEY_LAST_POLL: &str = "jira_last_poll";
 
 fn e2s<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
@@ -652,14 +669,47 @@ fn last_updated_of(issues: &[Value]) -> Option<DateTime<FixedOffset>> {
         .and_then(parse_time)
 }
 
-/// 절단된 두 검색의 워터마크 병합 — 둘 다 있으면 이른 쪽(미수신 구간이 안 생기도록).
-fn merge_watermarks(
-    a: Option<DateTime<FixedOffset>>,
-    b: Option<DateTime<FixedOffset>>,
-) -> Option<DateTime<FixedOffset>> {
-    match (a, b) {
-        (Some(x), Some(y)) => Some(x.min(y)),
-        (x, y) => x.or(y),
+/// 스코프별 시각 묶음 (APP·멘션·담당지정). since 전달과 "다음 since" 반환에 공용으로 쓴다.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ScopeTimes {
+    app: DateTime<Local>,
+    men: DateTime<Local>,
+    asg: DateTime<Local>,
+}
+
+/// 다음 폴링에서 쓸 since 계산 (순수 함수 — AppHandle 없이 테스트).
+/// - 캡 절단(truncated=true): last_updated 를 **그대로** 사용한다. OVERLAP 을 빼지 않는다.
+///   ORDER BY updated ASC 이므로 그 시각 이하는 모두 처리했고, 다음 조회가 `>=` 로
+///   경계값을 다시 포함하므로 누락이 없다(중복은 event_uid dedup 이 흡수).
+/// - 미절단: now − OVERLAP_MINS (기존 안전 여유 유지).
+/// - 전진 보장: 결과가 prev 이하면 prev + 1초로 강제 전진시킨다.
+fn next_since(
+    prev: DateTime<Local>,
+    truncated: bool,
+    last_updated: Option<DateTime<FixedOffset>>,
+    now: DateTime<Local>,
+) -> DateTime<Local> {
+    let cand = match (truncated, last_updated) {
+        (true, Some(w)) => w.with_timezone(&Local),
+        _ => now - Duration::minutes(OVERLAP_MINS),
+    };
+    if cand > prev {
+        cand
+    } else {
+        // 전진 실패(캡 500건이 전부 같은 시각 등) → 1초 강제 전진.
+        // 같은 구간을 영원히 반복하는 정체를 막기 위한 것으로, 경계 1초 안에만 존재하는
+        // 미처리 이벤트가 있다면 유실될 수 있다(무한 제자리보다 유실 위험이 작다고 판단).
+        prev + Duration::seconds(1)
+    }
+}
+
+/// 최대 소급 한도 클램프: now − MAX_LOOKBACK_DAYS 보다 과거면 그 시각으로 끌어올린다.
+fn clamp_lookback(t: DateTime<Local>, now: DateTime<Local>) -> DateTime<Local> {
+    let floor = now - Duration::days(MAX_LOOKBACK_DAYS);
+    if t < floor {
+        floor
+    } else {
+        t
     }
 }
 
@@ -723,13 +773,14 @@ fn fetch_comments(client: &reqwest::blocking::Client, cfg: &JiraConfig, issue: &
     }
 }
 
-/// 네트워크 구간: 두 JQL 을 폴링하고 이벤트를 분류해 반환(DB 락 없음).
-/// 워터마크(Option): 캡 절단이 있었으면 다음 폴링이 이어받을 기준 시각.
+/// 네트워크 구간: 세 스코프를 각자의 since 로 폴링하고 이벤트를 분류해 반환(DB 락 없음).
+/// 반환: (이벤트 전체, 스코프별 다음 since). 스코프는 서로의 진도에 영향을 주지 않는다
+/// — 한쪽이 캡에 잘려도 다른 쪽 since 는 그대로 전진한다.
 fn fetch_and_classify(
     cfg: &JiraConfig,
-    since_ts: i64,
-    t_str: &str,
-) -> Result<(Vec<NotifEvent>, Option<DateTime<FixedOffset>>), String> {
+    since: ScopeTimes,
+    now: DateTime<Local>,
+) -> Result<(Vec<NotifEvent>, ScopeTimes), String> {
     let client = client();
     let fields = "summary,status,assignee,creator,reporter,created,updated,comment";
     let mut events: Vec<NotifEvent> = Vec::new();
@@ -737,9 +788,11 @@ fn fetch_and_classify(
     // APP 프로젝트: 생성·변경·댓글
     let jql_app = format!(
         "project = \"{}\" AND updated >= \"{}\" ORDER BY updated ASC",
-        cfg.project, t_str
+        cfg.project,
+        jql_time_str(since.app)
     );
     let (app_issues, app_trunc) = search_jql(&client, cfg, &jql_app, fields)?;
+    let app_ts = since.app.timestamp();
     for issue in &app_issues {
         let key = issue["key"].as_str().unwrap_or_default();
         let histories = fetch_histories(&client, cfg, key);
@@ -748,7 +801,7 @@ fn fetch_and_classify(
             issue,
             &histories,
             &comments,
-            since_ts,
+            app_ts,
             &cfg.account_id,
             cfg.my_issues_only,
             cfg.include_my_comments,
@@ -758,42 +811,53 @@ fn fetch_and_classify(
     // 타 프로젝트: 멘션 댓글만
     let jql_men = format!(
         "project != \"{}\" AND updated >= \"{}\" ORDER BY updated ASC",
-        cfg.project, t_str
+        cfg.project,
+        jql_time_str(since.men)
     );
     let (men_issues, men_trunc) = search_jql(&client, cfg, &jql_men, fields)?;
+    let men_ts = since.men.timestamp();
     for issue in &men_issues {
         let comments = fetch_comments(&client, cfg, issue);
-        events.extend(classify_mention_issue(issue, &comments, since_ts, &cfg.account_id));
+        events.extend(classify_mention_issue(issue, &comments, men_ts, &cfg.account_id));
     }
 
     // 전 프로젝트: 나에게 담당자 지정(assignee CHANGED TO). APP 포함이어도 uid 동일 → dedup.
     let jql_asg = format!(
         "assignee CHANGED TO currentUser() AFTER \"{}\" ORDER BY updated ASC",
-        t_str
+        jql_time_str(since.asg)
     );
     let (asg_issues, asg_trunc) = search_jql(&client, cfg, &jql_asg, fields)?;
+    let asg_ts = since.asg.timestamp();
     for issue in &asg_issues {
         let key = issue["key"].as_str().unwrap_or_default();
         let histories = fetch_histories(&client, cfg, key);
-        events.extend(classify_assigned_issue(issue, &histories, since_ts, &cfg.account_id));
+        events.extend(classify_assigned_issue(issue, &histories, asg_ts, &cfg.account_id));
     }
 
-    let watermark = merge_watermarks(
-        merge_watermarks(
-            if app_trunc { last_updated_of(&app_issues) } else { None },
-            if men_trunc { last_updated_of(&men_issues) } else { None },
-        ),
-        if asg_trunc { last_updated_of(&asg_issues) } else { None },
-    );
-    Ok((events, watermark))
+    let next = ScopeTimes {
+        app: next_since(since.app, app_trunc, last_updated_of(&app_issues), now),
+        men: next_since(since.men, men_trunc, last_updated_of(&men_issues), now),
+        asg: next_since(since.asg, asg_trunc, last_updated_of(&asg_issues), now),
+    };
+    Ok((events, next))
 }
 
-/// since(오버랩 반영) 계산. last_poll 있으면 −5분, 없으면 now−poll_secs 윈도우.
-fn compute_since(last_poll: &str, poll_secs: i64) -> DateTime<Local> {
-    match parse_time(last_poll) {
-        Some(t) => (t - Duration::minutes(OVERLAP_MINS)).with_timezone(&Local),
-        None => Local::now() - Duration::seconds(poll_secs),
-    }
+/// 저장된 "다음 since" 문자열 → 이번 조회의 since.
+/// 저장값이 있으면 그대로 쓰고(이미 오버랩이 반영된 값이다 — 여기서 다시 빼지 않는다),
+/// 없으면 now−poll_secs 윈도우. 마지막에 최대 소급 한도로 클램프한다.
+fn compute_since(stored: &str, poll_secs: i64, now: DateTime<Local>) -> DateTime<Local> {
+    let base = match parse_time(stored) {
+        Some(t) => t.with_timezone(&Local),
+        None => now - Duration::seconds(poll_secs),
+    };
+    clamp_lookback(base, now)
+}
+
+/// 스코프 저장값(raw)이 비어 있으면 구버전 워터마크(jira_last_poll)로 시드하는 지연 마이그레이션.
+/// DB 스키마·user_version 은 건드리지 않는다. 시드 값에도 소급 한도 클램프가 적용된다.
+fn scope_since_from(raw: &str, seed: &str, poll_secs: i64, now: DateTime<Local>) -> DateTime<Local> {
+    let s = if raw.trim().is_empty() { seed } else { raw };
+    compute_since(s, poll_secs, now)
 }
 
 /// JQL 시각 문자열 (KST, "yyyy/MM/dd HH:mm")
@@ -855,26 +919,30 @@ fn send_new_toast(app: &AppHandle, events: &[&NotifEvent]) {
     }
 }
 
-/// 폴링 실행 + 결과 기록. 성공 시 last_poll 갱신·오류 초기화, 신규 있으면 토스트·emit·툴팁.
+/// 폴링 실행 + 결과 기록. 성공 시 스코프별 다음 since·실제 폴링 시각 갱신·오류 초기화,
+/// 신규 있으면 토스트·emit·툴팁.
 /// 반환: (신규 삽입 수, 오류 메시지 Option)
 fn run_and_record(app: &AppHandle, mut cfg: JiraConfig) -> (i64, Option<String>) {
     ensure_account_id(app, &mut cfg);
-    let last_poll = setting_str(app, "jira_last_poll");
-    let since = compute_since(&last_poll, cfg.poll_secs);
-    let since_ts = since.timestamp();
-    let t_str = jql_time_str(since);
+    let now = Local::now();
+    let since = load_scope_since(app, cfg.poll_secs, now);
 
-    match fetch_and_classify(&cfg, since_ts, &t_str) {
-        Ok((events, watermark)) => {
+    match fetch_and_classify(&cfg, since, now) {
+        Ok((events, next)) => {
             // 삽입 전 enabled 분류만 남긴다(설정 없음=전부 on).
             let events = filter_enabled(events, &cfg.categories);
-            let now = Local::now();
             // 신규 삽입된(dedup 통과) 이벤트 참조 — 토스트 요약에 사용. events 를 빌려온다.
+            // 락 실패 시에는 진도(since)를 전진시키지 않고 오류를 남긴 뒤 중단한다
+            // (기록 없이 조용히 반환하면 원인 추적이 불가능해진다).
             let inserted_events: Vec<&NotifEvent> = {
                 let state = app.state::<AppState>();
                 let conn = match state.db.lock() {
                     Ok(c) => c,
-                    Err(_) => return (0, Some("DB 잠금 실패".to_string())),
+                    Err(_) => {
+                        let msg = "DB 잠금 실패".to_string();
+                        record_error(app, &msg);
+                        return (0, Some(msg));
+                    }
                 };
                 let ins = insert_events(&conn, &events, &now.format("%Y-%m-%d %H:%M:%S").to_string())
                     .unwrap_or_default();
@@ -882,13 +950,9 @@ fn run_and_record(app: &AppHandle, mut cfg: JiraConfig) -> (i64, Option<String>)
                 ins
             };
             let inserted = inserted_events.len();
-            // 캡 절단 시 last_poll 을 워터마크로 기록해 다음 폴링이 이어서 가져간다.
-            // 워터마크가 since 이하면 진행이 안 되므로(같은 구간 반복) now 로 폴백(초과분 유실 감수).
-            let baseline = match watermark {
-                Some(w) if w.timestamp() > since_ts => w.with_timezone(&Local),
-                _ => now,
-            };
-            setting_write(app, "jira_last_poll", &baseline.to_rfc3339());
+            // 스코프별 다음 since 저장 + 실제 폴링 시각 기록(경과시간 판정·UI 표시용).
+            store_scope_since(app, next);
+            setting_write(app, KEY_LAST_POLL, &now.to_rfc3339());
             setting_write(app, "jira_last_error", "");
             if inserted > 0 {
                 if cfg.toast {
@@ -900,10 +964,28 @@ fn run_and_record(app: &AppHandle, mut cfg: JiraConfig) -> (i64, Option<String>)
             (inserted as i64, None)
         }
         Err(e) => {
-            setting_write(app, "jira_last_error", &e);
+            record_error(app, &e);
             (0, Some(e))
         }
     }
+}
+
+/// 스코프별 다음 since 로드(비어 있으면 구버전 jira_last_poll 로 시드 — 지연 마이그레이션).
+fn load_scope_since(app: &AppHandle, poll_secs: i64, now: DateTime<Local>) -> ScopeTimes {
+    let seed = setting_str(app, KEY_LAST_POLL);
+    let get = |key: &str| scope_since_from(&setting_str(app, key), &seed, poll_secs, now);
+    ScopeTimes {
+        app: get(KEY_TS_APP),
+        men: get(KEY_TS_MEN),
+        asg: get(KEY_TS_ASG),
+    }
+}
+
+/// 스코프별 다음 since 저장 (RFC3339).
+fn store_scope_since(app: &AppHandle, t: ScopeTimes) {
+    setting_write(app, KEY_TS_APP, &t.app.to_rfc3339());
+    setting_write(app, KEY_TS_MEN, &t.men.to_rfc3339());
+    setting_write(app, KEY_TS_ASG, &t.asg.to_rfc3339());
 }
 
 /// 안읽음 수를 담아 프론트에 jira-updated emit (capability 이미 listen 허용).
@@ -940,20 +1022,35 @@ fn setting_write(app: &AppHandle, key: &str, value: &str) {
     let _ = commands::write_setting(&conn, key, value);
 }
 
+/// 폴링 오류 기록 전용. 락이 poisoned 여도 into_inner 로 복구해 최선 노력으로 남긴다
+/// — 오류가 조용히 사라지면(기존 "DB 잠금 실패" 경로) 원인 추적이 불가능해지기 때문.
+/// 오류 기록 외의 쓰기에는 쓰지 않는다(락 의미를 바꾸지 않기 위해).
+fn record_error(app: &AppHandle, msg: &str) {
+    let state = app.state::<AppState>();
+    let conn = match state.db.lock() {
+        Ok(c) => c,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let _ = commands::write_setting(&conn, "jira_last_error", msg);
+}
+
 // ── 진입점 ────────────────────────────────────────────────
 
 /// 백그라운드 폴링 틱 (notify.rs 30초 루프에서 호출).
 /// jira_enabled + 경과시간(jira_poll_secs) 을 확인해 조건 충족 시에만 실제 폴링한다.
-/// 최초(마지막 폴링 기록 없음)에는 기준선만 세우고 스캔을 건너뛴다(과거 알림 폭주 방지).
+/// 경과시간 기준은 jira_last_poll(= 실제 폴링을 수행한 시각)이다 — 워터마크가 아니므로
+/// 캡 절단이 반복돼도 폴링 주기가 무너지지 않는다.
+/// 최초(폴링 이력 없음)에는 기준선만 세우고 스캔을 건너뛴다(과거 알림 폭주 방지).
+/// 이때 기록한 기준선은 다음 틱에서 스코프별 since 의 시드로도 쓰인다.
 pub fn poll_tick(app: &AppHandle) {
     let cfg = match load_config(app) {
         Some(c) if c.enabled => c,
         _ => return,
     };
-    let last_poll = setting_str(app, "jira_last_poll");
+    let last_poll = setting_str(app, KEY_LAST_POLL);
     if last_poll.is_empty() {
         // 최초: 기준선만 기록하고 이번 틱은 스캔 생략
-        setting_write(app, "jira_last_poll", &Local::now().to_rfc3339());
+        setting_write(app, KEY_LAST_POLL, &Local::now().to_rfc3339());
         return;
     }
     // 경과시간 미달이면 skip
@@ -1193,24 +1290,19 @@ mod tests {
         assert_eq!(unread_count(&conn).unwrap(), 3);
     }
 
-    // 9) 캡 절단 워터마크: 마지막 수신 이슈의 updated, 병합은 이른 쪽
+    // 9) 캡 절단 워터마크: 마지막 수신 이슈의 updated (ORDER BY updated ASC → 최대값)
+    //    (스코프별 워터마크 분리로 merge_watermarks 는 삭제됨 — 병합 검증 없음)
     #[test]
-    fn watermark_last_updated_and_merge() {
+    fn watermark_last_updated_of_issues() {
         let issues = vec![
             json!({ "key": "APP-1", "fields": { "updated": "2026-07-21T10:00:00.000+0900" } }),
             json!({ "key": "APP-2", "fields": { "updated": "2026-07-21T11:00:00.000+0900" } }),
         ];
         let w = last_updated_of(&issues).unwrap();
         assert_eq!(w, parse_time("2026-07-21T11:00:00.000+0900").unwrap());
-        // updated 없는 이슈만 있으면 None (run_and_record 에서 now 폴백)
+        // updated 없는 이슈만 있으면 None (next_since 에서 now−OVERLAP 폴백)
         assert!(last_updated_of(&[json!({ "key": "X-1", "fields": {} })]).is_none());
         assert!(last_updated_of(&[]).is_none());
-
-        let early = parse_time("2026-07-21T09:00:00.000+0900");
-        let late = parse_time("2026-07-21T11:00:00.000+0900");
-        assert_eq!(merge_watermarks(early, late), early); // 둘 다 절단 → 이른 쪽
-        assert_eq!(merge_watermarks(None, late), late);   // 한쪽만 절단 → 그 쪽
-        assert_eq!(merge_watermarks(None, None), None);
     }
 
     // 8) ADF 텍스트 추출 + 80자 절단
@@ -1488,5 +1580,140 @@ mod tests {
         assert_eq!(ev[0].event_uid, "APP-800:cm:8001");
         assert_eq!(ev[0].actor, "이지수");
         assert!(ev[0].detail.contains("내가 남긴 댓글"));
+    }
+
+    // ── 폴링 진도(since) 관리 — 시각 로직 순수 함수 검증 ──────
+
+    /// 테스트용 시각 헬퍼 (KST 문자열 → Local)
+    fn lt(s: &str) -> DateTime<Local> {
+        parse_time(s).unwrap().with_timezone(&Local)
+    }
+
+    /// fetch_and_classify 가 스코프별로 수행하는 "다음 since" 계산과 동일한 조합.
+    /// (네트워크 구간을 제외한 시각 로직만 재현)
+    fn next_scope_times(
+        since: ScopeTimes,
+        trunc: (bool, bool, bool),
+        last: (Option<&str>, Option<&str>, Option<&str>),
+        now: DateTime<Local>,
+    ) -> ScopeTimes {
+        let p = |s: Option<&str>| s.and_then(parse_time);
+        ScopeTimes {
+            app: next_since(since.app, trunc.0, p(last.0), now),
+            men: next_since(since.men, trunc.1, p(last.1), now),
+            asg: next_since(since.asg, trunc.2, p(last.2), now),
+        }
+    }
+
+    // 19) 정체 회귀 방지(핵심): 캡 절단 + last_updated 가 이전 since 와 동일해도 반드시 전진.
+    //     실측 버그값(2026-08-06T08:09:35.126+09:00 고정) 재현 시나리오.
+    #[test]
+    fn next_since_always_advances_when_stuck() {
+        let prev = lt("2026-08-06T08:09:35.126+0900");
+        let now = lt("2026-08-12T10:00:00.000+0900");
+        // 캡에 잘렸고 마지막 이슈 updated 가 prev 와 같음 → 이전 구현은 제자리였다.
+        let next = next_since(prev, true, parse_time("2026-08-06T08:09:35.126+0900"), now);
+        assert!(next > prev, "다음 since 가 전진해야 한다: {} vs {}", next, prev);
+        assert_eq!(next, prev + Duration::seconds(1)); // 1초 강제 전진
+        // last_updated 가 prev 보다 과거인 경우(정렬 이상 등)에도 뒤로 가지 않는다.
+        let back = next_since(prev, true, parse_time("2026-08-05T00:00:00.000+0900"), now);
+        assert_eq!(back, prev + Duration::seconds(1));
+        // 절단 없이 now−OVERLAP 이 prev 보다 이른 경우(짧은 간격 재폴링)도 전진.
+        let soon = lt("2026-08-12T09:59:00.000+0900");
+        assert_eq!(
+            next_since(soon, false, None, now),
+            soon + Duration::seconds(1)
+        );
+    }
+
+    // 20) 캡 절단: OVERLAP 을 빼지 않고 last_updated 를 그대로 다음 since 로 쓴다.
+    #[test]
+    fn next_since_truncated_uses_last_updated_without_overlap() {
+        let prev = lt("2026-08-12T08:00:00.000+0900");
+        let now = lt("2026-08-12T10:00:00.000+0900");
+        let last = "2026-08-12T08:05:30.500+0900";
+        let next = next_since(prev, true, parse_time(last), now);
+        assert_eq!(next, lt(last)); // 그대로 — OVERLAP(5분) 차감 없음
+        assert_ne!(next, lt(last) - Duration::minutes(OVERLAP_MINS));
+    }
+
+    // 21) 캡 미절단: now − OVERLAP_MINS (안전 여유 유지). last_updated 가 있어도 무시.
+    #[test]
+    fn next_since_not_truncated_uses_now_minus_overlap() {
+        let prev = lt("2026-08-12T08:00:00.000+0900");
+        let now = lt("2026-08-12T10:00:00.000+0900");
+        let expect = now - Duration::minutes(OVERLAP_MINS);
+        assert_eq!(next_since(prev, false, None, now), expect);
+        assert_eq!(
+            next_since(prev, false, parse_time("2026-08-12T09:00:00.000+0900"), now),
+            expect
+        );
+        // truncated=true 인데 이슈가 없어 last_updated 가 None 이면 미절단과 동일 취급
+        assert_eq!(next_since(prev, true, None, now), expect);
+    }
+
+    // 22) 스코프 독립: 한 스코프(멘션)가 캡에 잘려도 다른 스코프 진도가 뒤로 끌려가지 않는다.
+    //     (기존 merge_watermarks 의 min 병합 회귀 방지)
+    #[test]
+    fn scopes_do_not_drag_each_other() {
+        let now = lt("2026-08-12T10:00:00.000+0900");
+        let since = ScopeTimes {
+            app: lt("2026-08-12T09:50:00.000+0900"),
+            men: lt("2026-08-06T08:00:00.000+0900"),
+            asg: lt("2026-08-12T09:50:00.000+0900"),
+        };
+        // 멘션만 절단(2026-08-06 근처에서 멈춤), APP·담당지정은 정상 완주.
+        let next = next_scope_times(
+            since,
+            (false, true, false),
+            (None, Some("2026-08-06T08:09:35.126+0900"), None),
+            now,
+        );
+        let fresh = now - Duration::minutes(OVERLAP_MINS);
+        assert_eq!(next.app, fresh); // 멘션의 과거 워터마크에 끌려가지 않음
+        assert_eq!(next.asg, fresh);
+        assert_eq!(next.men, lt("2026-08-06T08:09:35.126+0900")); // 멘션만 이어받기
+        assert!(next.men < next.app);
+    }
+
+    // 23) 최대 소급 한도: 7일보다 과거인 저장값은 now−7일로 클램프, 최근값은 그대로.
+    #[test]
+    fn compute_since_clamps_to_max_lookback() {
+        let now = lt("2026-08-12T10:00:00.000+0900");
+        let floor = now - Duration::days(MAX_LOOKBACK_DAYS);
+        // 30일 전 저장값 → 클램프
+        assert_eq!(compute_since("2026-07-13T10:00:00.000+0900", 180, now), floor);
+        // 한도 내 저장값 → 그대로(오버랩 재차감 없음)
+        let recent = "2026-08-11T10:00:00.000+0900";
+        assert_eq!(compute_since(recent, 180, now), lt(recent));
+        // 저장값 없음 → now − poll_secs 윈도우
+        assert_eq!(compute_since("", 180, now), now - Duration::seconds(180));
+        // clamp_lookback 단독
+        assert_eq!(clamp_lookback(floor - Duration::seconds(1), now), floor);
+        assert_eq!(clamp_lookback(now, now), now);
+    }
+
+    // 24) 지연 마이그레이션: 스코프 키가 비어 있으면 기존 jira_last_poll 값으로 시드된다.
+    #[test]
+    fn migration_seeds_scopes_from_last_poll() {
+        let now = lt("2026-08-12T10:00:00.000+0900");
+        let seed = "2026-08-06T08:09:35.126+0900"; // 실측 DB 의 기존 jira_last_poll
+        // 세 스코프 모두 빈값 → 기존 값으로 동일하게 시드
+        for key in [KEY_TS_APP, KEY_TS_MEN, KEY_TS_ASG] {
+            assert!(!key.is_empty()); // 키 상수 존재 확인
+            assert_eq!(scope_since_from("", seed, 180, now), lt(seed));
+        }
+        // 공백만 있는 값도 빈값으로 취급
+        assert_eq!(scope_since_from("   ", seed, 180, now), lt(seed));
+        // 스코프 저장값이 있으면 그 값이 우선(시드 무시)
+        let own = "2026-08-12T09:00:00.000+0900";
+        assert_eq!(scope_since_from(own, seed, 180, now), lt(own));
+        // 시드도 없으면 now − poll_secs
+        assert_eq!(scope_since_from("", "", 180, now), now - Duration::seconds(180));
+        // 시드가 7일보다 과거면 클램프 적용
+        assert_eq!(
+            scope_since_from("", "2026-07-01T00:00:00.000+0900", 180, now),
+            now - Duration::days(MAX_LOOKBACK_DAYS)
+        );
     }
 }
